@@ -21,6 +21,18 @@ streamlit run app.py
 
 首次使用建议在“数据中心”先更新股票列表，再更新单只股票或批量更新日线数据。
 
+## 本地验收
+
+```bash
+python scripts/validate_project.py
+```
+
+启动命令：
+
+```bash
+streamlit run app.py
+```
+
 ## 数据来源
 
 数据通过 AKShare 获取，当前使用：
