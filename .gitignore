@@ -5,4 +5,5 @@ __pycache__/
 .streamlit/
 .venv/
 .chrome-profile/
+.pet-runs/
 *.log
