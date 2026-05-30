@@ -1,50 +1,43 @@
-# A股量化研究平台 MVP
+# A-Stock Quant Lab
 
-本项目是一个本地运行的 Python A股量化研究平台，用于个人投资研究，不接入自动交易。第一阶段覆盖“数据获取 -> 因子计算 -> 策略选股 -> 回测 -> Streamlit 界面展示”的完整闭环。
+本项目是本地运行的 Python A股量化研究平台，用于个人投资研究，不接入自动交易，不提供实盘下单，不承诺收益。
 
-## 安装方法
+V3 将系统从“单策略信号回测”升级为“真实交易模拟 + 仓位管理 + 策略组合研究平台”，重点覆盖交易成本、滑点、A股下单约束、组合回测、gross/net 对比、策略组合和增强市场环境分析。
+
+## 安装
 
 建议使用 Python 3.11 或更高版本。
 
 ```bash
-cd "D:\Project\Stock Trading"
-python -m venv .venv
-.venv\Scripts\activate
+cd "C:\Users\18961\Documents\Stock Trading"
 pip install -r requirements.txt
 ```
 
-## 运行方法
+## 运行
 
 ```bash
 streamlit run app.py
 ```
 
-首次使用建议在“数据中心”先更新股票列表，再更新单只股票或批量更新日线数据。
-
-## 本地验收
+本地验收命令：
 
 ```bash
 python scripts/validate_project.py
 ```
 
-启动命令：
-
-```bash
-streamlit run app.py
-```
-
 ## 数据来源
 
-数据通过 AKShare 获取，当前使用：
+股票列表、股票日线和沪深300指数数据通过 AKShare 获取，写入本地 SQLite：
 
-- `stock_info_a_code_name`：A股股票代码与名称
-- `stock_zh_a_hist`：单只股票历史日线行情
+- 股票日线表：`daily_price`
+- 股票列表表：`stock_list`
+- 指数行情表：`index_prices`
 
-日线数据写入本地 SQLite：`storage/stock_quant.db`。日线表以 `code + date` 作为主键，重复更新会执行 upsert，避免重复下载后产生重复记录。
+如果本地没有沪深300指数数据，市场环境模块允许使用股票池已有数据构造等权代理指数。该 fallback 仅用于研究辅助，不能替代真实指数行情。
 
 ## 因子说明
 
-`factor/factor_engine.py` 实现以下因子：
+`factor/factor_engine.py` 计算：
 
 - MA5、MA10、MA20、MA60
 - return_5d、return_10d、return_20d
@@ -55,95 +48,101 @@ streamlit run app.py
 - distance_to_ma20
 - max_drawdown_20d
 
-所有 rolling 与 pct_change 计算都按股票分组、按日期升序执行，只使用当前日及以前的数据。
+所有 rolling 和 pct_change 均按股票分组、按日期升序执行，只使用当前日及以前数据。
 
 ## 策略说明
 
-当前内置 4 个策略：
+内置策略：
 
-- `trend_strength_strategy`：趋势多头、20日动量强、成交额活跃、排除 ST。
-- `pullback_ma20_strategy`：MA20 在 MA60 上方，价格回踩 MA20 附近，短期涨跌幅温和，量能不过热。
-- `volume_breakout_strategy`：60日新高突破，量比放大，当日涨幅控制在 3% 到 8%。
-- `multi_factor_score_strategy`：综合趋势强度、20日动量、成交额、60日突破、MA20距离、20日回撤风险打分。
-
-每个策略统一输出：
-
-- code
-- name
-- signal_date
-- strategy_name
-- score
-- signal_reason
-- suggested_buy_price
-- suggested_stop_loss
-- suggested_take_profit
-- risk_level
+- 趋势强势股策略：`close > MA20 > MA60`、20日涨幅强、成交额活跃、排除 ST。
+- MA20回踩策略：MA20 在 MA60 上方，价格回踩 MA20 附近，短期涨跌幅温和，量能不过热。
+- 放量突破策略：突破 60 日新高，量比放大，当日涨幅控制在 3% 到 8%。
+- 多因子评分策略：综合趋势、动量、成交额、突破、MA20距离和回撤风险评分。
+- 策略组合：合并多个策略信号，按权重计算综合分并支持每日 Top N。
 
 ## 回测逻辑
 
-回测引擎位于 `backtest/backtest_engine.py`。
+V2 单策略回测保留：
 
-买入规则：
+- 信号日后一交易日开盘买入。
+- 支持固定持仓 5 / 10 / 20 / 60 个交易日。
+- 支持固定止盈、固定止损、跌破 MA20 卖出。
+- 输出胜率、平均收益、CAGR、夏普、最大回撤、盈亏比、连续亏损和期望收益。
 
-- 信号日后一交易日开盘价买入。
+V3 组合回测新增：
 
-卖出规则：
+- 每日按交易日推进。
+- 收盘后生成信号，下一交易日开盘尝试买入。
+- 买入检查现金、100股整数倍、已有持仓、涨停近似限制。
+- 卖出检查止盈、止损、跌破 MA20、固定持仓周期、跌停近似限制。
+- 每日更新 cash、positions、market_value、total_equity 和 drawdown。
+- 输出组合资金曲线、回撤曲线、订单、交易、持仓快照和组合指标。
 
-- 固定持仓 5 / 10 / 20 / 60 个交易日。
-- 支持固定止盈，例如 10%、15%、20%。
-- 支持固定止损，例如 5%、8%、10%。
-- 可选择跌破 MA20 卖出。
+## 交易成本模型
 
-如果同一交易日同时触发止损和止盈，回测按更保守的止损优先处理。
+默认参数仅用于研究，真实费率需要按个人券商账户调整：
 
-V2 回测指标包括：
+- 佣金比例：`commission_rate = 0.0003`
+- 单笔最低佣金：`min_commission = 5.0`
+- 卖出印花税：`stamp_tax_rate_sell = 0.0005`
+- 规费近似：`regulatory_fee_rate = 0.00002`
+- 过户费近似：`transfer_fee_rate = 0.00001`
 
-- total_trades
-- win_rate
-- avg_return
-- median_return
-- CAGR
-- sharpe_ratio
-- max_drawdown
-- profit_loss_ratio
-- max_consecutive_losses
-- expectancy
-- equity_curve
-- drawdown_curve
+成本明细会拆分为 commission、stamp_tax、regulatory_fee、transfer_fee、total_cost。
 
-`expectancy = win_rate * avg_win - lose_rate * avg_loss`。权益曲线从初始资金 1.0 开始，只按清洗后的交易收益序列累计一次，最大回撤由该单一权益曲线计算。
+## 滑点模型
 
-## V2 研究模块
+默认滑点为 `slippage_bps = 5`：
 
-### 参数优化器
+- 买入成交价 = 原始价格 * `(1 + slippage_bps / 10000)`
+- 卖出成交价 = 原始价格 * `(1 - slippage_bps / 10000)`
 
-`optimizer/parameter_optimizer.py` 提供网格搜索：
+滑点成本会单独统计，并参与 net result。
 
-- 趋势强势股策略：`min_amount`、`min_return_20d`
-- MA20回踩策略：`max_distance`
-- 放量突破策略：`min_volume_ratio`
+## 仓位模型
 
-输出排名前 20 的参数组合，包含胜率、年化收益、最大回撤和夏普。
+支持三种仓位方法：
 
-### 策略排行榜
+- `equal_cash`：可用资金按剩余可开仓数量等分。
+- `fixed_cash`：每笔固定金额。
+- `risk_percent`：根据买入价与止损价的风险距离计算仓位。
 
-`ranking/leaderboard.py` 支持最近 1个月、3个月、6个月、1年维度的策略统计，并按规则输出 A/B/C/D 评级。
+买入股数始终向下取整到 100 股整数倍，仓位计算会考虑交易费用。资金不足买入 100 股时，订单会跳过并记录原因。
 
-### 市场环境分类
+## Gross 与 Net
 
-`market/regime_engine.py` 使用 MA60 将市场划分为：
+- gross：不含佣金、印花税、规费、过户费和滑点。
+- net：包含佣金、印花税、规费、过户费和滑点。
+- `cost_impact = gross_total_return - net_total_return`。
 
-- Bull：close > MA60
-- Bear：close < MA60
-- Sideways：其他
+UI 会显示交易成本对收益的影响。
 
-回测中心会展示按市场环境分组后的交易表现。
+## 市场环境
+
+增强市场环境使用：
+
+- MA20、MA60、MA120
+- return_20d
+- volatility_20d
+- trend_slope_60d
+
+分类：
+
+- `BULL`：close > MA60，MA60 > MA120，return_20d > 0。
+- `BEAR`：close < MA60，MA60 < MA120，return_20d < 0。
+- `HIGH_VOLATILITY`：volatility_20d 高于最近一年 75 分位数。
+- `SIDEWAYS`：其他情况。
+
+涨跌停模型为 V3 近似版本，默认按 10% 阈值估算。后续 V4 可按主板、创业板、科创板、ST 等规则细分。
 
 ## 测试
 
 ```bash
-pytest
-python -c "from factor.factor_engine import compute_factors; from backtest.backtest_engine import BacktestEngine; from ranking.ranking_engine import STRATEGIES; print('imports ok')"
+pip install -r requirements.txt
+python -m pytest -q
+python -m ruff check .
+python -m compileall .
+python scripts/validate_project.py
 ```
 
 ## 风险提示
@@ -151,4 +150,7 @@ python -c "from factor.factor_engine import compute_factors; from backtest.backt
 - 本工具仅用于个人研究。
 - 本工具不构成任何投资建议。
 - 回测结果不代表未来收益。
-- 策略信号需要结合交易制度、流动性、停复牌、涨跌停、财报事件与个人风险承受能力进一步判断。
+- 默认交易成本参数仅为研究假设。
+- 未接入 Level-2 成交数据，未考虑完整盘口冲击成本。
+- 未覆盖停牌、复权差异、流动性缺失等所有极端情况。
+- 本项目不是自动交易系统，不支持实盘下单。

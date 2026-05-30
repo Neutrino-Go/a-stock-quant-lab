@@ -1,19 +1,35 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from backtest.backtest_engine import calculate_trade_metrics
 
 
-REGIME_ORDER = ["Bull", "Bear", "Sideways"]
+REGIME_ORDER = ["BULL", "BEAR", "SIDEWAYS", "HIGH_VOLATILITY"]
+REGIME_LABEL_MAP = {
+    "Bull": "BULL",
+    "Bear": "BEAR",
+    "Sideways": "SIDEWAYS",
+    "High Volatility": "HIGH_VOLATILITY",
+}
 
 
-def classify_market_regime(
-    index_df: pd.DataFrame,
-    ma_window: int = 60,
-) -> pd.DataFrame:
+def classify_market_regime(index_df: pd.DataFrame) -> pd.DataFrame:
     if index_df.empty:
-        return pd.DataFrame(columns=["date", "close", "ma60", "regime"])
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "close",
+                "ma20",
+                "ma60",
+                "ma120",
+                "return_20d",
+                "volatility_20d",
+                "trend_slope_60d",
+                "regime",
+            ]
+        )
 
     required = {"date", "close"}
     missing = required - set(index_df.columns)
@@ -24,10 +40,25 @@ def classify_market_regime(
     result["date"] = pd.to_datetime(result["date"])
     result["close"] = pd.to_numeric(result["close"], errors="coerce")
     result = result.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
-    result["ma60"] = result["close"].rolling(ma_window, min_periods=1).mean()
-    result["regime"] = "Sideways"
-    result.loc[result["close"].gt(result["ma60"]), "regime"] = "Bull"
-    result.loc[result["close"].lt(result["ma60"]), "regime"] = "Bear"
+
+    result["ma20"] = result["close"].rolling(20, min_periods=1).mean()
+    result["ma60"] = result["close"].rolling(60, min_periods=1).mean()
+    result["ma120"] = result["close"].rolling(120, min_periods=1).mean()
+    result["return_20d"] = result["close"].pct_change(20, fill_method=None)
+    daily_return = result["close"].pct_change(fill_method=None)
+    result["volatility_20d"] = daily_return.rolling(20, min_periods=2).std()
+    result["trend_slope_60d"] = result["close"].pct_change(60, fill_method=None) / 60
+    vol_q75 = result["volatility_20d"].rolling(252, min_periods=20).quantile(0.75)
+
+    bull = result["close"].gt(result["ma60"]) & result["ma60"].gt(result["ma120"]) & result["return_20d"].gt(0)
+    bear = result["close"].lt(result["ma60"]) & result["ma60"].lt(result["ma120"]) & result["return_20d"].lt(0)
+    high_vol = result["volatility_20d"].gt(vol_q75) & result["volatility_20d"].gt(1e-6)
+
+    result["regime"] = np.select(
+        [high_vol, bull, bear],
+        ["HIGH_VOLATILITY", "BULL", "BEAR"],
+        default="SIDEWAYS",
+    )
     return result
 
 
@@ -57,18 +88,7 @@ def summarize_trades_by_regime(
     trade_date_column: str = "signal_date",
 ) -> pd.DataFrame:
     if trade_details.empty or market_regime.empty:
-        return pd.DataFrame(
-            columns=[
-                "regime",
-                "total_trades",
-                "win_rate",
-                "avg_return",
-                "CAGR",
-                "max_drawdown",
-                "sharpe_ratio",
-                "profit_loss_ratio",
-            ]
-        )
+        return _empty_regime_summary()
 
     trades = trade_details.copy()
     trades[trade_date_column] = pd.to_datetime(trades[trade_date_column])
@@ -76,6 +96,7 @@ def summarize_trades_by_regime(
     regimes["date"] = pd.to_datetime(regimes["date"])
     if "regime" not in regimes.columns:
         regimes = classify_market_regime(regimes)
+    regimes["regime"] = regimes["regime"].map(lambda value: REGIME_LABEL_MAP.get(str(value), str(value)))
 
     merged = pd.merge_asof(
         trades.sort_values(trade_date_column),
@@ -84,11 +105,13 @@ def summarize_trades_by_regime(
         right_on="date",
         direction="backward",
     )
-    merged["regime"] = merged["regime"].fillna("Sideways")
+    merged["regime"] = merged["regime"].fillna("SIDEWAYS")
 
     rows = []
+    return_column = "net_return" if "net_return" in merged.columns else "return"
     for regime, group in merged.groupby("regime", sort=False):
-        metrics = calculate_trade_metrics(group)
+        metrics_input = group.rename(columns={return_column: "return"})
+        metrics = calculate_trade_metrics(metrics_input)
         rows.append(
             {
                 "regime": regime,
@@ -105,3 +128,18 @@ def summarize_trades_by_regime(
     result = pd.DataFrame(rows)
     result["regime"] = pd.Categorical(result["regime"], categories=REGIME_ORDER, ordered=True)
     return result.sort_values("regime").reset_index(drop=True)
+
+
+def _empty_regime_summary() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "regime",
+            "total_trades",
+            "win_rate",
+            "avg_return",
+            "CAGR",
+            "max_drawdown",
+            "sharpe_ratio",
+            "profit_loss_ratio",
+        ]
+    )

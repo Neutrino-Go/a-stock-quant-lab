@@ -6,6 +6,7 @@ STRATEGY_DISPLAY_NAMES = {
     "pullback_ma20_strategy": "MA20回踩策略",
     "volume_breakout_strategy": "放量突破策略",
     "multi_factor_score_strategy": "多因子评分策略",
+    "ensemble_strategy": "策略组合",
 }
 
 
@@ -19,7 +20,7 @@ STRATEGY_DESCRIPTIONS = {
             "排除 ST",
         ],
         "suitable_for": ["牛市", "主升浪"],
-        "risk": "容易追高，震荡市中假突破较多",
+        "risk": "容易追高，震荡市中假突破较多。",
     },
     "pullback_ma20_strategy": {
         "name": "MA20回踩策略",
@@ -30,7 +31,7 @@ STRATEGY_DESCRIPTIONS = {
             "量比 < 1.2",
         ],
         "suitable_for": ["趋势延续", "温和回踩"],
-        "risk": "趋势转弱时容易接到下跌中继",
+        "risk": "趋势转弱时容易接到下跌中继。",
     },
     "volume_breakout_strategy": {
         "name": "放量突破策略",
@@ -40,7 +41,7 @@ STRATEGY_DESCRIPTIONS = {
             "当日涨幅在 3% 到 8%",
         ],
         "suitable_for": ["强势突破", "题材扩散"],
-        "risk": "高位放量后可能快速回落",
+        "risk": "高位放量后可能快速回落。",
     },
     "multi_factor_score_strategy": {
         "name": "多因子评分策略",
@@ -53,7 +54,7 @@ STRATEGY_DESCRIPTIONS = {
             "20日回撤风险",
         ],
         "suitable_for": ["多策略筛选", "横向比较"],
-        "risk": "评分模型需要持续校准",
+        "risk": "评分模型需要持续校准。",
     },
 }
 

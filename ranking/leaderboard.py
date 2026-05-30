@@ -15,40 +15,71 @@ DEFAULT_PERIODS = {
 }
 
 
-def rate_strategy(cagr: float, sharpe_ratio: float, max_drawdown: float) -> str:
-    if sharpe_ratio > 1.5 and cagr > 0.15 and abs(max_drawdown) < 0.20:
+def rate_strategy(
+    net_cagr: float | None = None,
+    sharpe_ratio: float = 0.0,
+    max_drawdown: float = 0.0,
+    cagr: float | None = None,
+) -> str:
+    score_cagr = float(net_cagr if net_cagr is not None else cagr if cagr is not None else 0.0)
+    if score_cagr > 0.15 and sharpe_ratio > 1.5 and max_drawdown > -0.20:
         return "A"
-    if sharpe_ratio > 1.0 and cagr > 0.08:
+    if score_cagr > 0.08 and sharpe_ratio > 1.0 and max_drawdown > -0.30:
         return "B"
-    if cagr > 0:
+    if score_cagr > 0:
         return "C"
     return "D"
 
 
 def build_leaderboard_from_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "period",
+        "strategy",
+        "rating",
+        "win_rate",
+        "avg_return",
+        "gross_annual_return",
+        "net_annual_return",
+        "cost_impact",
+        "max_drawdown",
+        "sharpe_ratio",
+        "calmar_ratio",
+        "profit_loss_ratio",
+    ]
     if metrics_df.empty:
-        return pd.DataFrame(columns=["周期", "策略", "评级", "胜率", "平均收益", "年化", "回撤", "夏普", "盈亏比"])
+        return pd.DataFrame(columns=columns)
 
     rows = []
     for item in metrics_df.to_dict("records"):
+        net_cagr = _first_number(item, "net_CAGR", "net_annual_return", "CAGR", "annual_return")
+        gross_annual = _first_number(item, "gross_annual_return", "gross_CAGR", "CAGR", "annual_return")
+        max_drawdown = float(item.get("max_drawdown", 0) or 0)
+        sharpe_ratio = float(item.get("sharpe_ratio", 0) or 0)
         rows.append(
             {
-                "周期": item.get("period", ""),
-                "策略": display_strategy_name(str(item["strategy_name"])),
-                "评级": rate_strategy(
-                    float(item.get("CAGR", 0)),
-                    float(item.get("sharpe_ratio", 0)),
-                    float(item.get("max_drawdown", 0)),
+                "period": item.get("period", ""),
+                "strategy": display_strategy_name(str(item["strategy_name"])),
+                "rating": rate_strategy(
+                    net_cagr=net_cagr,
+                    sharpe_ratio=sharpe_ratio,
+                    max_drawdown=max_drawdown,
                 ),
-                "胜率": float(item.get("win_rate", 0)),
-                "平均收益": float(item.get("avg_return", 0)),
-                "年化": float(item.get("CAGR", 0)),
-                "回撤": float(item.get("max_drawdown", 0)),
-                "夏普": float(item.get("sharpe_ratio", 0)),
-                "盈亏比": float(item.get("profit_loss_ratio", 0)),
+                "win_rate": float(item.get("win_rate", 0) or 0),
+                "avg_return": float(item.get("avg_return", 0) or 0),
+                "gross_annual_return": gross_annual,
+                "net_annual_return": net_cagr,
+                "cost_impact": float(item.get("cost_impact", max(0.0, gross_annual - net_cagr)) or 0),
+                "max_drawdown": max_drawdown,
+                "sharpe_ratio": sharpe_ratio,
+                "calmar_ratio": _calmar(net_cagr, max_drawdown),
+                "profit_loss_ratio": float(item.get("profit_loss_ratio", 0) or 0),
             }
         )
-    return pd.DataFrame(rows).sort_values(["周期", "评级", "夏普", "年化"], ascending=[True, True, False, False]).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["period", "rating", "sharpe_ratio", "net_annual_return"], ascending=[True, True, False, False])
+        .reset_index(drop=True)
+    )
 
 
 def build_strategy_leaderboard(
@@ -92,6 +123,9 @@ def build_strategy_leaderboard(
                     "win_rate": metrics["win_rate"],
                     "avg_return": metrics["avg_return"],
                     "CAGR": metrics["CAGR"],
+                    "gross_annual_return": metrics["CAGR"],
+                    "net_annual_return": metrics["CAGR"],
+                    "cost_impact": 0.0,
                     "max_drawdown": metrics["max_drawdown"],
                     "sharpe_ratio": metrics["sharpe_ratio"],
                     "profit_loss_ratio": metrics["profit_loss_ratio"],
@@ -99,3 +133,17 @@ def build_strategy_leaderboard(
                 }
             )
     return build_leaderboard_from_metrics(pd.DataFrame(metrics_rows))
+
+
+def _first_number(item: dict[str, object], *keys: str) -> float:
+    for key in keys:
+        value = item.get(key)
+        if value is not None:
+            return float(value)
+    return 0.0
+
+
+def _calmar(cagr: float, max_drawdown: float) -> float:
+    if max_drawdown == 0:
+        return 0.0
+    return float(cagr / abs(max_drawdown))
