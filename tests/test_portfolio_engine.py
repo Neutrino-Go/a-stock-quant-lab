@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from execution.cost_model import TradingCostConfig
 from portfolio.portfolio_engine import ExitConfig, PortfolioBacktestEngine
@@ -87,6 +88,25 @@ def test_portfolio_skips_duplicate_position_by_default():
 
     assert len(buy_orders.loc[buy_orders["status"].eq("FILLED")]) == 1
     assert "SKIPPED_DUPLICATE_POSITION" in set(buy_orders["status"])
+
+
+def test_portfolio_rejects_add_position_mode_in_v3():
+    with pytest.raises(
+        NotImplementedError,
+        match="allow_add_position=True is not supported in V3",
+    ):
+        PortfolioBacktestEngine(exit_config=ExitConfig(allow_add_position=True))
+
+
+def test_portfolio_rejects_add_position_mode_at_runtime_if_mutated():
+    engine = _engine()
+    object.__setattr__(engine.exit_config, "allow_add_position", True)
+
+    with pytest.raises(
+        NotImplementedError,
+        match="allow_add_position=True is not supported in V3",
+    ):
+        engine.run(_signals(), _prices())
 
 
 def test_portfolio_respects_t_plus_one_before_selling():

@@ -73,10 +73,23 @@ def build_market_proxy_from_prices(price_df: pd.DataFrame) -> pd.DataFrame:
     proxy = price_df.copy()
     proxy["date"] = pd.to_datetime(proxy["date"])
     proxy["close"] = pd.to_numeric(proxy["close"], errors="coerce")
+    proxy = proxy.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+    if proxy.empty:
+        return pd.DataFrame(columns=["date", "close"])
+
+    if "code" not in proxy.columns:
+        return proxy.groupby("date", as_index=False)["close"].mean().sort_values("date").reset_index(drop=True)
+
+    proxy["code"] = proxy["code"].astype(str).str.zfill(6)
+    first_close = proxy.groupby("code")["close"].transform("first")
+    proxy = proxy[first_close.gt(0)].copy()
+    if proxy.empty:
+        return pd.DataFrame(columns=["date", "close"])
+    proxy["normalized_close"] = proxy["close"] / first_close.loc[proxy.index]
     return (
-        proxy.dropna(subset=["date", "close"])
-        .groupby("date", as_index=False)["close"]
+        proxy.groupby("date", as_index=False)["normalized_close"]
         .mean()
+        .rename(columns={"normalized_close": "close"})
         .sort_values("date")
         .reset_index(drop=True)
     )

@@ -43,6 +43,7 @@ class PortfolioBacktestEngine:
         self.cost_config = cost_config or TradingCostConfig()
         self.position_config = position_config or PositionSizingConfig()
         self.exit_config = exit_config or ExitConfig()
+        self._reject_add_position_mode()
 
     def run(
         self,
@@ -51,6 +52,7 @@ class PortfolioBacktestEngine:
         start_date: str | pd.Timestamp | None = None,
         end_date: str | pd.Timestamp | None = None,
     ) -> dict[str, object]:
+        self._reject_add_position_mode()
         prices = self._prepare_prices(price_data)
         if prices.empty:
             return self._empty_result(pd.DataFrame())
@@ -132,6 +134,13 @@ class PortfolioBacktestEngine:
             "positions_snapshot": positions_df,
             "metrics": metrics,
         }
+
+    def _reject_add_position_mode(self) -> None:
+        if self.exit_config.allow_add_position:
+            raise NotImplementedError(
+                "allow_add_position=True is not supported in V3; "
+                "lot-level position accounting is planned for V4."
+            )
 
     def _process_exits(
         self,

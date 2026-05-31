@@ -422,7 +422,13 @@ def portfolio_backtest_page() -> None:
     with col3:
         enable_limit_check = st.checkbox("启用涨跌停检查", value=True)
     with col4:
-        allow_add_position = st.checkbox("允许同股加仓", value=False)
+        st.checkbox(
+            "允许同股加仓",
+            value=False,
+            disabled=True,
+            key="portfolio_allow_add_position_disabled",
+            help="V3 暂不支持同股加仓；V4 将支持 lot-level 持仓核算。",
+        )
 
     st.subheader("策略组合权重")
     weight_cols = st.columns(4)
@@ -456,7 +462,7 @@ def portfolio_backtest_page() -> None:
         take_profit_pct=float(take_profit_pct),
         stop_loss_pct=float(stop_loss_pct),
         sell_on_ma20_break=sell_on_ma20_break,
-        allow_add_position=allow_add_position,
+        allow_add_position=False,
         enable_limit_check=enable_limit_check,
         daily_top_n=int(daily_top_n),
     )

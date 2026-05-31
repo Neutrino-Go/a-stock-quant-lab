@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from backtest.backtest_engine import run_strategy_backtest
+from backtest.backtest_engine import apply_realistic_costs_to_trades, run_strategy_backtest
+from execution.cost_model import TradingCostConfig
 from ranking.ranking_engine import STRATEGIES
 from strategy.metadata import display_strategy_name
 
@@ -41,6 +42,9 @@ def build_leaderboard_from_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
         "gross_annual_return",
         "net_annual_return",
         "cost_impact",
+        "total_commission",
+        "total_stamp_tax",
+        "total_slippage_cost",
         "max_drawdown",
         "sharpe_ratio",
         "calmar_ratio",
@@ -53,6 +57,7 @@ def build_leaderboard_from_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
     for item in metrics_df.to_dict("records"):
         net_cagr = _first_number(item, "net_CAGR", "net_annual_return", "CAGR", "annual_return")
         gross_annual = _first_number(item, "gross_annual_return", "gross_CAGR", "CAGR", "annual_return")
+        cost_impact = float(item.get("cost_impact", max(0.0, gross_annual - net_cagr)) or 0)
         max_drawdown = float(item.get("max_drawdown", 0) or 0)
         sharpe_ratio = float(item.get("sharpe_ratio", 0) or 0)
         rows.append(
@@ -68,7 +73,10 @@ def build_leaderboard_from_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
                 "avg_return": float(item.get("avg_return", 0) or 0),
                 "gross_annual_return": gross_annual,
                 "net_annual_return": net_cagr,
-                "cost_impact": float(item.get("cost_impact", max(0.0, gross_annual - net_cagr)) or 0),
+                "cost_impact": max(0.0, cost_impact),
+                "total_commission": float(item.get("total_commission", 0) or 0),
+                "total_stamp_tax": float(item.get("total_stamp_tax", 0) or 0),
+                "total_slippage_cost": float(item.get("total_slippage_cost", 0) or 0),
                 "max_drawdown": max_drawdown,
                 "sharpe_ratio": sharpe_ratio,
                 "calmar_ratio": _calmar(net_cagr, max_drawdown),
@@ -89,10 +97,12 @@ def build_strategy_leaderboard(
     holding_days: int = 20,
     take_profit_pct: float | None = 0.10,
     stop_loss_pct: float | None = 0.08,
+    cost_config: TradingCostConfig | None = None,
 ) -> pd.DataFrame:
     if factor_df.empty:
         return build_leaderboard_from_metrics(pd.DataFrame())
 
+    cost_config = cost_config or TradingCostConfig()
     periods = periods or DEFAULT_PERIODS
     data = factor_df.copy()
     data["date"] = pd.to_datetime(data["date"])
@@ -116,20 +126,29 @@ def build_strategy_leaderboard(
                 stop_loss_pct=stop_loss_pct,
                 sell_on_ma20_break=True,
             )
+            _, net_metrics = apply_realistic_costs_to_trades(
+                metrics["trade_details"],
+                cost_config=cost_config,
+            )
+            gross_annual_return = float(metrics["CAGR"])
+            net_annual_return = float(net_metrics["CAGR"])
             metrics_rows.append(
                 {
                     "period": period_name,
                     "strategy_name": strategy_name,
-                    "win_rate": metrics["win_rate"],
-                    "avg_return": metrics["avg_return"],
-                    "CAGR": metrics["CAGR"],
-                    "gross_annual_return": metrics["CAGR"],
-                    "net_annual_return": metrics["CAGR"],
-                    "cost_impact": 0.0,
-                    "max_drawdown": metrics["max_drawdown"],
-                    "sharpe_ratio": metrics["sharpe_ratio"],
-                    "profit_loss_ratio": metrics["profit_loss_ratio"],
-                    "total_trades": metrics["total_trades"],
+                    "win_rate": net_metrics["win_rate"],
+                    "avg_return": net_metrics["avg_return"],
+                    "CAGR": net_annual_return,
+                    "gross_annual_return": gross_annual_return,
+                    "net_annual_return": net_annual_return,
+                    "cost_impact": max(0.0, gross_annual_return - net_annual_return),
+                    "total_commission": net_metrics.get("total_commission", 0.0),
+                    "total_stamp_tax": net_metrics.get("total_stamp_tax", 0.0),
+                    "total_slippage_cost": net_metrics.get("total_slippage_cost", 0.0),
+                    "max_drawdown": net_metrics["max_drawdown"],
+                    "sharpe_ratio": net_metrics["sharpe_ratio"],
+                    "profit_loss_ratio": net_metrics["profit_loss_ratio"],
+                    "total_trades": net_metrics["total_trades"],
                 }
             )
     return build_leaderboard_from_metrics(pd.DataFrame(metrics_rows))
