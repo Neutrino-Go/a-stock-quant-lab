@@ -18,6 +18,16 @@ from portfolio.position_sizer import PositionSizingConfig
 from portfolio.strategy_ensemble import DEFAULT_STRATEGY_WEIGHTS, combine_strategy_signals
 from ranking.leaderboard import build_strategy_leaderboard
 from ranking.ranking_engine import STRATEGIES, rank_recommendations, run_all_strategies, run_strategy
+from research.experiment_compare import compare_experiments
+from research.experiment_service import ExperimentService
+from research.report_exporter import export_config_json, export_experiment_csv, export_markdown_report
+from research.ui_helpers import (
+    RATING_OPTIONS,
+    experiment_option_label,
+    filter_experiment_table,
+    parse_tags,
+    rating_display_name,
+)
 from report.charts import (
     plot_cost_breakdown,
     plot_drawdown_curve,
@@ -55,6 +65,11 @@ def load_factor_data(start_date: str | None = None, end_date: str | None = None)
     return compute_factors(daily)
 
 
+@st.cache_resource
+def experiment_service() -> ExperimentService:
+    return ExperimentService()
+
+
 def clear_data_cache() -> None:
     load_daily_data.clear()
     load_factor_data.clear()
@@ -72,6 +87,27 @@ def num(value: object, digits: int = 2) -> str:
         return f"{float(value):.{digits}f}"
     except (TypeError, ValueError):
         return "-"
+
+
+def config_to_dict(value: object) -> object:
+    if hasattr(value, "__dataclass_fields__"):
+        return {key: config_to_dict(getattr(value, key)) for key in value.__dataclass_fields__}
+    if isinstance(value, dict):
+        return {key: config_to_dict(item) for key, item in value.items()}
+    return value
+
+
+def experiment_equity_for_chart(equity: pd.DataFrame) -> pd.DataFrame:
+    if equity.empty:
+        return equity.copy()
+    result = equity.copy()
+    if "total_equity" not in result.columns and "net_equity" in result.columns:
+        result["total_equity"] = result["net_equity"]
+    if "gross_total_equity" not in result.columns and "gross_equity" in result.columns:
+        result["gross_total_equity"] = result["gross_equity"]
+    if "positions_count" not in result.columns and "position_count" in result.columns:
+        result["positions_count"] = result["position_count"]
+    return result
 
 
 def select_strategy(label: str, key: str) -> str:
@@ -297,6 +333,12 @@ def backtest_center() -> None:
         enable_costs = st.checkbox("启用真实交易成本", value=False)
     cost_config = cost_config_panel(prefix="single_bt_") if enable_costs else TradingCostConfig(slippage_bps=0, commission_rate=0, min_commission=0, stamp_tax_rate_sell=0, regulatory_fee_rate=0, transfer_fee_rate=0)
 
+    exp_col1, exp_col2 = st.columns(2)
+    with exp_col1:
+        experiment_name = st.text_input("实验名称", value=f"{display_strategy_name(strategy_name)} 回测实验", key="single_exp_name")
+    with exp_col2:
+        experiment_tags = st.text_input("实验标签", value="single_strategy", key="single_exp_tags")
+
     if st.button("运行回测"):
         with st.spinner("正在生成历史信号并回测"):
             result = run_strategy_backtest(
@@ -315,36 +357,71 @@ def backtest_center() -> None:
             result.update(cost_metrics)
             result["trade_details"] = adjusted_trades
 
-        render_metrics(result)
-        trades = result["trade_details"]
-        if not trades.empty:
-            left, right = st.columns(2)
-            left.plotly_chart(plot_equity_curve(trades), use_container_width=True)
-            right.plotly_chart(plot_drawdown_curve(result["drawdown_curve"]), use_container_width=True)
-            st.plotly_chart(plot_trade_returns(trades), use_container_width=True)
-            if enable_costs:
-                st.plotly_chart(
-                    plot_gross_vs_net_return(
-                        {
-                            "gross_total_return": result.get("gross_return", 0),
-                            "net_total_return": result.get("net_return", 0),
-                            "cost_impact": result.get("cost_impact", 0),
-                        }
-                    ),
-                    use_container_width=True,
-                )
-                st.plotly_chart(plot_cost_breakdown(trades), use_container_width=True)
-                st.info(
-                    f"成本影响 {pct(result.get('cost_impact', 0))}，佣金 {num(result.get('total_commission', 0))}，"
-                    f"印花税 {num(result.get('total_stamp_tax', 0))}，滑点成本 {num(result.get('total_slippage_cost', 0))}。"
-                )
-            st.subheader("交易明细")
-            st.dataframe(with_display_strategy_names(trades), use_container_width=True)
-            st.subheader("市场环境分析")
-            regimes = load_market_regime(factors)
-            st.dataframe(summarize_trades_by_regime(trades, regimes), use_container_width=True)
-        else:
-            st.info("当前参数下没有有效交易")
+        st.session_state["single_backtest_result"] = {
+            "result": result,
+            "strategy_name": strategy_name,
+            "start_date": str(start_date),
+            "end_date": str(end_date),
+            "config": {
+                "strategy_config": params,
+                "cost_config": config_to_dict(cost_config),
+                "exit_config": {
+                    "holding_days": int(holding_days),
+                    "take_profit_pct": float(take_profit_pct),
+                    "stop_loss_pct": float(stop_loss_pct),
+                    "sell_on_ma20_break": sell_on_ma20_break,
+                    "enable_costs": enable_costs,
+                },
+            },
+        }
+
+    saved = st.session_state.get("single_backtest_result")
+    if not saved:
+        return
+
+    result = saved["result"]
+    render_metrics(result)
+    trades = result["trade_details"]
+    if st.button("保存本次单策略回测"):
+        experiment_id = experiment_service().save_single_strategy_backtest_result(
+            name=experiment_name,
+            strategy_name=saved["strategy_name"],
+            result=result,
+            start_date=saved["start_date"],
+            end_date=saved["end_date"],
+            config=saved["config"],
+            tags=parse_tags(experiment_tags),
+        )
+        st.success(f"实验已保存：{experiment_id}")
+
+    if not trades.empty:
+        left, right = st.columns(2)
+        left.plotly_chart(plot_equity_curve(trades), use_container_width=True)
+        right.plotly_chart(plot_drawdown_curve(result["drawdown_curve"]), use_container_width=True)
+        st.plotly_chart(plot_trade_returns(trades), use_container_width=True)
+        if enable_costs:
+            st.plotly_chart(
+                plot_gross_vs_net_return(
+                    {
+                        "gross_total_return": result.get("gross_return", 0),
+                        "net_total_return": result.get("net_return", 0),
+                        "cost_impact": result.get("cost_impact", 0),
+                    }
+                ),
+                use_container_width=True,
+            )
+            st.plotly_chart(plot_cost_breakdown(trades), use_container_width=True)
+            st.info(
+                f"成本影响 {pct(result.get('cost_impact', 0))}，佣金 {num(result.get('total_commission', 0))}，"
+                f"印花税 {num(result.get('total_stamp_tax', 0))}，滑点成本 {num(result.get('total_slippage_cost', 0))}。"
+            )
+        st.subheader("交易明细")
+        st.dataframe(with_display_strategy_names(trades), use_container_width=True)
+        st.subheader("市场环境分析")
+        regimes = load_market_regime(factors)
+        st.dataframe(summarize_trades_by_regime(trades, regimes), use_container_width=True)
+    else:
+        st.info("当前参数下没有有效交易")
 
 
 def parameter_optimizer_page() -> None:
@@ -369,7 +446,33 @@ def parameter_optimizer_page() -> None:
     if st.button("运行参数优化"):
         result = optimize_strategy(factors, strategy_name=strategy_name, start_date=pd.Timestamp(start_date), end_date=pd.Timestamp(end_date), holding_days=int(holding_days), top_n=20)
         result["strategy"] = result["strategy_name"].map(display_strategy_name)
-        st.dataframe(result, use_container_width=True)
+        st.session_state["optimizer_result"] = {
+            "result": result,
+            "strategy_name": strategy_name,
+            "start_date": str(start_date),
+            "end_date": str(end_date),
+            "config": {
+                "optimizer_config": {
+                    "param_grid": DEFAULT_PARAM_GRIDS[strategy_name],
+                    "holding_days": int(holding_days),
+                    "top_n": 20,
+                }
+            },
+        }
+    saved = st.session_state.get("optimizer_result")
+    if saved:
+        st.dataframe(saved["result"], use_container_width=True)
+        if st.button("保存优化结果"):
+            experiment_id = experiment_service().save_optimizer_result(
+                name=f"{display_strategy_name(saved['strategy_name'])} 参数优化",
+                result=saved["result"],
+                strategy_name=saved["strategy_name"],
+                start_date=saved["start_date"],
+                end_date=saved["end_date"],
+                config=saved["config"],
+                tags=["optimizer"],
+            )
+            st.success(f"优化实验已保存：{experiment_id}")
 
 
 def strategy_leaderboard_page() -> None:
@@ -381,8 +484,22 @@ def strategy_leaderboard_page() -> None:
     latest_date = pd.to_datetime(factors["date"]).max()
     with st.spinner("正在统计策略排行榜"):
         leaderboard = build_strategy_leaderboard(factors, as_of=latest_date)
+    st.session_state["leaderboard_snapshot"] = {
+        "leaderboard": leaderboard,
+        "as_of": str(latest_date.date()),
+        "config": {"as_of": str(latest_date.date())},
+    }
     st.caption(f"统计截至：{latest_date.date()}，排行榜使用 net result 口径。")
     st.dataframe(leaderboard, use_container_width=True)
+    if st.button("保存排行榜快照"):
+        experiment_id = experiment_service().save_leaderboard_snapshot(
+            name=f"策略排行榜快照 {latest_date.date()}",
+            leaderboard=leaderboard,
+            as_of=latest_date,
+            config={"leaderboard_config": {"as_of": str(latest_date.date())}},
+            tags=["leaderboard"],
+        )
+        st.success(f"排行榜实验已保存：{experiment_id}")
 
 
 def portfolio_backtest_page() -> None:
@@ -467,6 +584,14 @@ def portfolio_backtest_page() -> None:
         daily_top_n=int(daily_top_n),
     )
 
+    exp_col1, exp_col2, exp_col3 = st.columns(3)
+    with exp_col1:
+        experiment_name = st.text_input("实验名称", value="组合回测实验", key="portfolio_exp_name")
+    with exp_col2:
+        experiment_tags = st.text_input("实验标签", value="portfolio ensemble", key="portfolio_exp_tags")
+    with exp_col3:
+        auto_save_experiment = st.checkbox("运行后自动保存实验", value=False)
+
     if st.button("运行组合回测"):
         with st.spinner("正在生成策略组合信号并执行组合回测"):
             signals_by_strategy = build_strategy_signal_history(factors, pd.Timestamp(start_date), pd.Timestamp(end_date))
@@ -475,6 +600,26 @@ def portfolio_backtest_page() -> None:
             result = engine.run(ensemble, factors, start_date=pd.Timestamp(start_date), end_date=pd.Timestamp(end_date))
         st.session_state["portfolio_result"] = result
         st.session_state["portfolio_initial_cash"] = float(initial_cash)
+        st.session_state["portfolio_experiment_context"] = {
+            "start_date": str(start_date),
+            "end_date": str(end_date),
+            "config": {
+                "strategy_config": {"weights": weights, "daily_top_n": int(daily_top_n)},
+                "cost_config": config_to_dict(cost_config),
+                "position_config": config_to_dict(position_config),
+                "exit_config": config_to_dict(exit_config),
+            },
+        }
+        if auto_save_experiment:
+            experiment_id = experiment_service().save_portfolio_backtest_result(
+                name=experiment_name,
+                result=result,
+                start_date=str(start_date),
+                end_date=str(end_date),
+                config=st.session_state["portfolio_experiment_context"]["config"],
+                tags=parse_tags(experiment_tags),
+            )
+            st.success(f"实验已自动保存：{experiment_id}")
 
     result = st.session_state.get("portfolio_result")
     if not result:
@@ -486,6 +631,18 @@ def portfolio_backtest_page() -> None:
     trades = result["trades"]
     orders = result["orders"]
     positions = result["positions_snapshot"]
+
+    if st.button("保存本次组合回测实验"):
+        context = st.session_state.get("portfolio_experiment_context", {})
+        experiment_id = experiment_service().save_portfolio_backtest_result(
+            name=experiment_name,
+            result=result,
+            start_date=context.get("start_date", str(start_date)),
+            end_date=context.get("end_date", str(end_date)),
+            config=context.get("config", {}),
+            tags=parse_tags(experiment_tags),
+        )
+        st.success(f"实验已保存：{experiment_id}，可前往实验中心查看。")
 
     left, right = st.columns(2)
     left.plotly_chart(plot_portfolio_equity_curve(equity), use_container_width=True)
@@ -500,6 +657,180 @@ def portfolio_backtest_page() -> None:
     tabs[1].dataframe(with_display_strategy_names(orders), use_container_width=True)
     tabs[2].dataframe(equity, use_container_width=True)
     tabs[3].dataframe(with_display_strategy_names(positions), use_container_width=True)
+
+
+def experiment_center_page() -> None:
+    st.header("实验中心")
+    service = experiment_service()
+    experiments = service.build_experiment_summary()
+    tabs = st.tabs(["实验列表", "实验详情", "实验对比", "报告导出"])
+
+    with tabs[0]:
+        experiment_list_tab(service, experiments)
+    with tabs[1]:
+        experiment_detail_tab(service, experiments)
+    with tabs[2]:
+        experiment_compare_tab(service, experiments)
+    with tabs[3]:
+        experiment_export_tab(service, experiments)
+
+
+def experiment_list_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+    if experiments.empty:
+        st.info("当前暂无实验记录。请先在“组合回测”或“回测中心”中运行并保存一次实验。")
+        return
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        type_options = [""] + sorted(experiments["experiment_type"].dropna().unique().tolist())
+        experiment_type = st.selectbox("实验类型", type_options, format_func=lambda value: value or "全部")
+    with col2:
+        strategy_options = [""] + sorted(experiments["strategy_name"].dropna().unique().tolist())
+        strategy_name = st.selectbox("策略名称", strategy_options, format_func=lambda value: value or "全部")
+    with col3:
+        rating = st.selectbox("评级", [""] + RATING_OPTIONS, format_func=lambda value: rating_display_name(value) if value else "全部")
+    with col4:
+        tag = st.text_input("标签筛选")
+
+    sort_by = st.selectbox(
+        "排序字段",
+        ["created_at", "net_CAGR", "max_drawdown", "sharpe_ratio", "final_equity"],
+        index=0,
+    )
+    filtered = filter_experiment_table(
+        experiments,
+        experiment_type=experiment_type or None,
+        strategy_name=strategy_name or None,
+        tag=tag or None,
+        rating=rating or None,
+    )
+    if sort_by in filtered.columns:
+        filtered = filtered.sort_values(sort_by, ascending=sort_by == "max_drawdown", na_position="last")
+
+    display_columns = [
+        "name",
+        "experiment_type",
+        "strategy_name",
+        "start_date",
+        "end_date",
+        "net_CAGR",
+        "max_drawdown",
+        "sharpe_ratio",
+        "win_rate",
+        "cost_impact",
+        "rating",
+        "created_at",
+    ]
+    st.dataframe(filtered.loc[:, [column for column in display_columns if column in filtered.columns]], use_container_width=True)
+
+    selected_id = select_experiment_id(filtered, "list_select_experiment")
+    if selected_id:
+        st.session_state["selected_experiment_id"] = selected_id
+        confirm = st.checkbox("确认删除所选实验", key="confirm_delete_experiment")
+        if st.button("删除实验", disabled=not confirm):
+            service.store.delete_experiment(selected_id)
+            st.success("实验已删除，请刷新实验列表。")
+
+
+def experiment_detail_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+    selected_id = st.session_state.get("selected_experiment_id") or select_experiment_id(experiments, "detail_select_experiment")
+    if not selected_id:
+        st.info("请选择一个实验查看详情。")
+        return
+    detail = service.build_experiment_detail(selected_id)
+    if detail["run"] is None:
+        st.warning("实验不存在或已删除。")
+        return
+    run = detail["run"]
+    metrics = run["metrics_json"]
+
+    cols = st.columns(4)
+    cols[0].metric("实验类型", run["experiment_type"])
+    cols[1].metric("策略", run.get("strategy_name") or "-")
+    cols[2].metric("评级", rating_display_name(run.get("rating")))
+    cols[3].metric("Git Commit", (run.get("git_commit") or "-")[:8])
+
+    render_portfolio_metrics(metrics, float(metrics.get("initial_cash", 1_000_000)))
+    st.json(run["config_json"], expanded=False)
+
+    equity = experiment_equity_for_chart(detail["equity_curve"])
+    left, right = st.columns(2)
+    left.plotly_chart(plot_portfolio_equity_curve(equity), use_container_width=True)
+    right.plotly_chart(plot_portfolio_drawdown_curve(equity.loc[:, ["date", "drawdown"]] if "drawdown" in equity.columns else pd.DataFrame()), use_container_width=True)
+    left.plotly_chart(plot_cost_breakdown(detail["trades"]), use_container_width=True)
+
+    table_tabs = st.tabs(["Trades", "Orders", "Daily Equity"])
+    table_tabs[0].dataframe(detail["trades"], use_container_width=True)
+    table_tabs[1].dataframe(detail["orders"], use_container_width=True)
+    table_tabs[2].dataframe(detail["equity_curve"], use_container_width=True)
+
+    notes = st.text_area("Notes", value=run.get("notes") or "", key=f"notes_{selected_id}")
+    conclusion = st.text_area("Conclusion", value=run.get("conclusion") or "", key=f"conclusion_{selected_id}")
+    tags = st.text_input("Tags", value=", ".join(run.get("tags") or []), key=f"tags_{selected_id}")
+    rating = st.selectbox(
+        "Rating",
+        RATING_OPTIONS,
+        index=RATING_OPTIONS.index(run.get("rating") or "unrated"),
+        format_func=rating_display_name,
+        key=f"rating_{selected_id}",
+    )
+    if st.button("保存备注 / 标签 / 评级"):
+        service.store.update_notes(selected_id, notes=notes, conclusion=conclusion)
+        service.store.update_tags(selected_id, parse_tags(tags))
+        service.store.update_rating(selected_id, rating)
+        st.success("实验研究记录已更新。")
+
+
+def experiment_compare_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+    if experiments.empty or len(experiments) < 2:
+        st.info("至少需要 2 个实验才能进行对比。")
+        return
+    labels = {experiment_option_label(row): row["id"] for _, row in experiments.iterrows()}
+    default_labels = list(labels.keys())[:2]
+    selected_labels = st.multiselect("选择 2 到 5 个实验", list(labels.keys()), default=default_labels, max_selections=5)
+    if len(selected_labels) < 2:
+        st.info("请选择至少 2 个实验。")
+        return
+
+    result = compare_experiments([labels[label] for label in selected_labels], store=service.store)
+    st.subheader("指标对比")
+    st.dataframe(result["metrics_comparison"], use_container_width=True)
+    st.subheader("最佳实验")
+    st.json(result["winner_by_metric"], expanded=False)
+    if not result["normalized_equity_curves"].empty:
+        st.line_chart(result["normalized_equity_curves"].set_index("date"))
+    if not result["drawdown_curves"].empty:
+        st.line_chart(result["drawdown_curves"].set_index("date"))
+    if not result["cost_comparison"].empty:
+        st.bar_chart(result["cost_comparison"].set_index("name")[["total_cost", "cost_impact"]])
+
+
+def experiment_export_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+    selected_id = select_experiment_id(experiments, "export_select_experiment")
+    if not selected_id:
+        st.info("请选择一个实验导出报告。")
+        return
+    exports = [
+        ("导出 Markdown", lambda: export_markdown_report(service.store, selected_id)),
+        ("导出 Trades CSV", lambda: export_experiment_csv(service.store, selected_id, "trades")),
+        ("导出 Orders CSV", lambda: export_experiment_csv(service.store, selected_id, "orders")),
+        ("导出 Equity CSV", lambda: export_experiment_csv(service.store, selected_id, "equity_curve")),
+        ("导出 Config JSON", lambda: export_config_json(service.store, selected_id)),
+    ]
+    for label, action in exports:
+        if st.button(label):
+            path = action()
+            st.success(f"已导出：{path}")
+            data = path.read_bytes()
+            st.download_button(f"下载 {path.name}", data=data, file_name=path.name)
+
+
+def select_experiment_id(experiments: pd.DataFrame, key: str) -> str | None:
+    if experiments.empty:
+        return None
+    labels = {experiment_option_label(row): row["id"] for _, row in experiments.iterrows()}
+    selected = st.selectbox("选择实验", list(labels), key=key)
+    return labels.get(selected)
 
 
 def today_picks() -> None:
@@ -627,6 +958,7 @@ PAGES = {
     "参数优化器": parameter_optimizer_page,
     "策略排行榜": strategy_leaderboard_page,
     "组合回测": portfolio_backtest_page,
+    "实验中心": experiment_center_page,
     "今日选股": today_picks,
     "个股分析": stock_analysis,
 }

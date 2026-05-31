@@ -19,6 +19,8 @@ REQUIRED_DIRS = [
     "portfolio",
     "ranking",
     "report",
+    "research",
+    "reports/experiments",
     "strategy",
     "tests",
     "storage",
@@ -44,6 +46,12 @@ REQUIRED_FILES = [
     "portfolio/strategy_ensemble.py",
     "ranking/leaderboard.py",
     "report/charts.py",
+    "research/experiment_store.py",
+    "research/experiment_models.py",
+    "research/experiment_service.py",
+    "research/experiment_compare.py",
+    "research/report_exporter.py",
+    "research/ui_helpers.py",
     "strategy/metadata.py",
     "tests/test_cost_model.py",
     "tests/test_slippage_model.py",
@@ -57,6 +65,11 @@ REQUIRED_FILES = [
     "tests/test_market_regime.py",
     "tests/test_optimizer.py",
     "tests/test_leaderboard.py",
+    "tests/test_experiment_store.py",
+    "tests/test_experiment_service.py",
+    "tests/test_experiment_compare.py",
+    "tests/test_report_exporter.py",
+    "tests/test_experiment_ui_helpers.py",
 ]
 
 
