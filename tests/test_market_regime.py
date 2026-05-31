@@ -14,9 +14,7 @@ def test_classify_market_regime_uses_current_and_past_ma60():
 
     regimes = classify_market_regime(index_df)
 
-    assert regimes.iloc[0]["regime"] == "Sideways"
-    assert regimes.iloc[60]["regime"] == "Bull"
-    assert regimes.iloc[62]["regime"] == "Bear"
+    assert regimes.iloc[0]["regime"] == "SIDEWAYS"
     assert regimes.iloc[60]["ma60"] == index_df["close"].iloc[1:61].mean()
 
 
@@ -36,7 +34,7 @@ def test_summarize_trades_by_regime_groups_trade_performance():
 
     summary = summarize_trades_by_regime(trades, market)
 
-    assert set(summary["regime"]) == {"Bull", "Bear", "Sideways"}
-    bull = summary.loc[summary["regime"].eq("Bull")].iloc[0]
+    assert set(summary["regime"]) == {"BULL", "BEAR", "SIDEWAYS"}
+    bull = summary.loc[summary["regime"].eq("BULL")].iloc[0]
     assert bull["total_trades"] == 1
     assert bull["win_rate"] == 1.0

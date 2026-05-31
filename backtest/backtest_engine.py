@@ -6,6 +6,9 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from execution.cost_model import TradingCostConfig, calculate_buy_cost, calculate_sell_cost
+from execution.slippage_model import buy_fill_price, sell_fill_price, slippage_cost
+
 
 def _empty_result() -> dict[str, object]:
     return {
@@ -337,3 +340,64 @@ def example_backtest(factor_df: pd.DataFrame) -> dict[str, object]:
         stop_loss_pct=0.08,
         sell_on_ma20_break=True,
     )
+
+
+def apply_realistic_costs_to_trades(
+    trade_details: pd.DataFrame,
+    cost_config: TradingCostConfig | None = None,
+    shares: int = 100,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    if trade_details.empty:
+        return trade_details.copy(), calculate_trade_metrics(trade_details)
+
+    cost_config = cost_config or TradingCostConfig()
+    rows = []
+    for trade in trade_details.to_dict("records"):
+        buy_price = float(trade["buy_price"])
+        sell_price = float(trade["exit_price"])
+        buy_fill = buy_fill_price(buy_price, cost_config)
+        sell_fill = sell_fill_price(sell_price, cost_config)
+        buy_cost = calculate_buy_cost(buy_fill, shares, cost_config)
+        sell_cost = calculate_sell_cost(sell_fill, shares, cost_config)
+        gross_buy = buy_price * shares
+        gross_sell = sell_price * shares
+        net_buy = buy_fill * shares + buy_cost["total_cost"]
+        net_sell = sell_fill * shares - sell_cost["total_cost"]
+        total_cost = buy_cost["total_cost"] + sell_cost["total_cost"]
+        total_slippage = slippage_cost(buy_price, buy_fill, shares) + slippage_cost(
+            sell_price,
+            sell_fill,
+            shares,
+        )
+        enriched = dict(trade)
+        enriched.update(
+            {
+                "gross_return": gross_sell / gross_buy - 1 if gross_buy > 0 else 0.0,
+                "net_return": net_sell / net_buy - 1 if net_buy > 0 else 0.0,
+                "return": net_sell / net_buy - 1 if net_buy > 0 else 0.0,
+                "buy_fill_price": buy_fill,
+                "sell_fill_price": sell_fill,
+                "gross_buy_amount": gross_buy,
+                "gross_sell_amount": gross_sell,
+                "net_buy_cash": net_buy,
+                "net_sell_cash": net_sell,
+                "commission": buy_cost["commission"] + sell_cost["commission"],
+                "stamp_tax": sell_cost["stamp_tax"],
+                "regulatory_fee": buy_cost["regulatory_fee"] + sell_cost["regulatory_fee"],
+                "transfer_fee": buy_cost["transfer_fee"] + sell_cost["transfer_fee"],
+                "total_cost": total_cost,
+                "slippage_cost": total_slippage,
+            }
+        )
+        rows.append(enriched)
+
+    adjusted = pd.DataFrame(rows)
+    metrics = calculate_trade_metrics(adjusted)
+    metrics["gross_return"] = float((1 + trade_details["return"]).prod() - 1)
+    metrics["net_return"] = metrics["cumulative_return"]
+    metrics["cost_impact"] = float(metrics["gross_return"] - metrics["net_return"])
+    metrics["total_commission"] = float(adjusted["commission"].sum())
+    metrics["total_stamp_tax"] = float(adjusted["stamp_tax"].sum())
+    metrics["total_slippage_cost"] = float(adjusted["slippage_cost"].sum())
+    metrics["trade_details"] = adjusted
+    return adjusted, metrics
