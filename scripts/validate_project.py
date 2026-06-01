@@ -42,9 +42,11 @@ REQUIRED_DIRS = [
     "report",
     "research",
     "reports/experiments",
+    "reports/research",
     "stability",
     "strategy",
     "tests",
+    "workflow",
     "storage",
 ]
 
@@ -80,6 +82,12 @@ REQUIRED_FILES = [
     "stability/overfit_detector.py",
     "stability/stability_metrics.py",
     "stability/stability_service.py",
+    "workflow/research_models.py",
+    "workflow/research_templates.py",
+    "workflow/research_scorecard.py",
+    "workflow/research_store.py",
+    "workflow/research_workflow.py",
+    "workflow/research_report.py",
     "strategy/metadata.py",
     "tests/test_cost_model.py",
     "tests/test_slippage_model.py",
@@ -107,6 +115,12 @@ REQUIRED_FILES = [
     "tests/test_stability_service.py",
     "tests/test_stability_report_export.py",
     "tests/test_stability_params.py",
+    "tests/test_research_models.py",
+    "tests/test_research_templates.py",
+    "tests/test_research_scorecard.py",
+    "tests/test_research_store.py",
+    "tests/test_research_report.py",
+    "tests/test_research_workflow.py",
     "pytest.ini",
 ]
 
