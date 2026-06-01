@@ -19,8 +19,10 @@ class ParameterSensitivityAnalyzer:
         if table.empty or self.primary_metric not in table.columns:
             return {
                 "parameter_table": [],
+                "param_columns": [],
                 "best_params": {},
                 "top_10_params": [],
+                "top_20_params": [],
                 "median_metric": 0.0,
                 "metric_std": 0.0,
                 "best_vs_median_gap": 0.0,
@@ -34,8 +36,10 @@ class ParameterSensitivityAnalyzer:
         if table.empty:
             return {
                 "parameter_table": [],
+                "param_columns": [],
                 "best_params": {},
                 "top_10_params": [],
+                "top_20_params": [],
                 "median_metric": 0.0,
                 "metric_std": 0.0,
                 "best_vs_median_gap": 0.0,
@@ -59,8 +63,10 @@ class ParameterSensitivityAnalyzer:
 
         return {
             "parameter_table": _records(ranked),
+            "param_columns": param_columns,
             "best_params": best_params,
             "top_10_params": _records(ranked.head(10)),
+            "top_20_params": _records(ranked.head(20)),
             "median_metric": median_metric,
             "metric_std": metric_std,
             "best_vs_median_gap": best_vs_median_gap,

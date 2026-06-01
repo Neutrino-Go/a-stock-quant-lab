@@ -106,6 +106,7 @@ REQUIRED_FILES = [
     "tests/test_stability_metrics.py",
     "tests/test_stability_service.py",
     "tests/test_stability_report_export.py",
+    "tests/test_stability_params.py",
     "pytest.ini",
 ]
 

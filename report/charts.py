@@ -324,8 +324,13 @@ def plot_parameter_sensitivity_heatmap(sensitivity_result: dict[str, object]) ->
     if table.empty:
         return _empty_figure("Parameter Sensitivity", "No parameter sensitivity data")
     metric = "net_CAGR" if "net_CAGR" in table.columns else "metric"
-    param_columns = [column for column in table.columns if column not in {metric, "rank"} and not column.endswith("_ratio")]
-    param_columns = [column for column in param_columns if column not in {"sharpe_ratio", "max_drawdown", "total_trades"}]
+    param_columns = list(sensitivity_result.get("param_columns", []) or [])
+    if not param_columns:
+        param_columns = [
+            column
+            for column in table.columns
+            if column not in {metric, "rank", "sharpe_ratio", "max_drawdown", "total_trades"}
+        ]
     if len(param_columns) >= 2:
         x_col, y_col = param_columns[0], param_columns[1]
         pivot = table.pivot_table(index=y_col, columns=x_col, values=metric, aggfunc="mean")
@@ -374,7 +379,9 @@ def plot_overfit_risk_flags(overfit_result: dict[str, object]) -> go.Figure:
 def plot_regime_stability(market_regime_breakdown: dict[str, dict[str, object]]) -> go.Figure:
     if not market_regime_breakdown:
         return _empty_figure("Market Regime Stability", "No market regime data")
-    regimes = list(market_regime_breakdown)
+    regimes = [regime for regime in market_regime_breakdown if not regime.startswith("_")]
+    if not regimes:
+        return _empty_figure("Market Regime Stability", "No market regime data")
     values = [_metric_value(market_regime_breakdown[regime], "net_CAGR") * 100 for regime in regimes]
     fig = go.Figure(go.Bar(x=regimes, y=values, name="Net CAGR"))
     fig.update_layout(

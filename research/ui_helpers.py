@@ -128,12 +128,13 @@ def stability_result_to_frames(result: dict[str, Any] | None) -> dict[str, pd.Da
     sensitivity = result.get("sensitivity_result", {}) or {}
     regimes = result.get("market_regime_breakdown", {}) or {}
     overfit = result.get("overfit_result", {}) or {}
+    regime_rows = {key: value for key, value in regimes.items() if not str(key).startswith("_")}
     return {
         "walk_forward_folds": pd.DataFrame(walk_forward.get("folds", []) or []),
         "parameter_table": pd.DataFrame(sensitivity.get("parameter_table", []) or []),
         "market_regimes": (
-            pd.DataFrame.from_dict(regimes, orient="index").reset_index(names="regime")
-            if regimes
+            pd.DataFrame.from_dict(regime_rows, orient="index").reset_index(names="regime")
+            if regime_rows
             else pd.DataFrame()
         ),
         "risk_flags": pd.DataFrame({"risk_flag": overfit.get("risk_flags", []) or []}),

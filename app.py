@@ -819,17 +819,29 @@ def render_stability_result(result: dict[str, object]) -> None:
     right.plotly_chart(plot_walk_forward_returns(walk_forward), use_container_width=True)
     left.plotly_chart(plot_parameter_sensitivity_heatmap(sensitivity), use_container_width=True)
     right.plotly_chart(plot_regime_stability(regimes), use_container_width=True)
+    regime_source = dict(regimes.get("_meta", {}) or {}).get("regime_source", "unavailable")
+    st.caption(f"市场环境来源：{market_regime_source_label(regime_source)}")
     st.plotly_chart(plot_overfit_risk_flags(overfit), use_container_width=True)
 
     tabs = st.tabs(["Walk-forward folds", "参数搜索 Top", "市场环境", "过拟合 flags"])
     folds = pd.DataFrame(walk_forward.get("folds", []) or [])
-    sensitivity_table = pd.DataFrame(sensitivity.get("top_10_params", []) or sensitivity.get("parameter_table", []) or [])
-    regime_table = pd.DataFrame.from_dict(regimes, orient="index").reset_index(names="regime") if regimes else pd.DataFrame()
+    sensitivity_table = pd.DataFrame(sensitivity.get("top_20_params", []) or sensitivity.get("parameter_table", []) or [])
+    regime_rows = {key: value for key, value in regimes.items() if not str(key).startswith("_")}
+    regime_table = pd.DataFrame.from_dict(regime_rows, orient="index").reset_index(names="regime") if regime_rows else pd.DataFrame()
     flags = pd.DataFrame({"risk_flag": overfit.get("risk_flags", []) or []})
     tabs[0].dataframe(folds, use_container_width=True)
     tabs[1].dataframe(sensitivity_table, use_container_width=True)
     tabs[2].dataframe(regime_table, use_container_width=True)
     tabs[3].dataframe(flags, use_container_width=True)
+
+
+def market_regime_source_label(regime_source: object) -> str:
+    labels = {
+        "HS300": "沪深300",
+        "fallback_equal_weight_proxy": "股票池等权代理指数 fallback，仅供参考",
+        "unavailable": "不可用",
+    }
+    return labels.get(str(regime_source), str(regime_source))
 
 
 def _unused_experiment_center_page_v31() -> None:
