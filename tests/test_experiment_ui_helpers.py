@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from research.ui_helpers import (
+    EXPERIMENT_TYPE_OPTIONS,
     RATING_OPTIONS,
     delete_confirmation_matches,
     experiment_option_label,
@@ -11,6 +12,7 @@ from research.ui_helpers import (
     rating_display_name,
     sort_experiment_table,
     sort_metric_values,
+    stability_result_to_frames,
 )
 
 
@@ -31,6 +33,7 @@ def test_rating_display_name_includes_research_meaning():
     assert rating_display_name("A").startswith("A:")
     assert rating_display_name("unknown").startswith("unrated:")
     assert "unrated" in RATING_OPTIONS
+    assert "strategy_stability_analysis" in EXPERIMENT_TYPE_OPTIONS
 
 
 def test_experiment_option_label_contains_name_type_and_date():
@@ -160,3 +163,19 @@ def test_delete_confirmation_matches_requires_exact_experiment_name():
     assert delete_confirmation_matches("Research Run", " Research Run ")
     assert not delete_confirmation_matches("Research Run", "research run")
     assert not delete_confirmation_matches("Research Run", "")
+
+
+def test_stability_result_to_frames_handles_empty_and_populated_results():
+    empty = stability_result_to_frames(None)
+    assert empty["walk_forward_folds"].empty
+    result = stability_result_to_frames(
+        {
+            "walk_forward_result": {"folds": [{"fold": 1}]},
+            "sensitivity_result": {"parameter_table": [{"rank": 1, "net_CAGR": 0.1}]},
+            "market_regime_breakdown": {"BULL": {"trade_count": 3}},
+            "overfit_result": {"risk_flags": ["low_trade_count"]},
+        }
+    )
+
+    assert list(result["walk_forward_folds"]["fold"]) == [1]
+    assert list(result["risk_flags"]["risk_flag"]) == ["low_trade_count"]

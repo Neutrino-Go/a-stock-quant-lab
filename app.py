@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pandas as pd
@@ -37,13 +38,19 @@ from report.charts import (
     plot_drawdown_curve,
     plot_equity_curve,
     plot_gross_vs_net_return,
+    plot_in_sample_vs_out_sample,
     plot_monthly_returns,
+    plot_overfit_risk_flags,
+    plot_parameter_sensitivity_heatmap,
     plot_portfolio_drawdown_curve,
     plot_portfolio_equity_curve,
     plot_position_count,
     plot_price_with_ma,
+    plot_regime_stability,
     plot_trade_returns,
+    plot_walk_forward_returns,
 )
+from stability.stability_service import DEFAULT_STABILITY_PARAMETER_GRIDS, StrategyStabilityService
 from strategy.metadata import STRATEGY_DESCRIPTIONS, display_strategy_name
 
 
@@ -72,6 +79,11 @@ def load_factor_data(start_date: str | None = None, end_date: str | None = None)
 @st.cache_resource
 def experiment_service() -> ExperimentService:
     return ExperimentService()
+
+
+@st.cache_resource
+def stability_service() -> StrategyStabilityService:
+    return StrategyStabilityService(experiment_service=experiment_service(), factor_data_loader=load_factor_data)
 
 
 def clear_data_cache() -> None:
@@ -663,6 +675,175 @@ def portfolio_backtest_page() -> None:
     tabs[3].dataframe(with_display_strategy_names(positions), use_container_width=True)
 
 
+def strategy_stability_page() -> None:
+    st.header("策略稳定性")
+    factors = load_factor_data()
+    if factors.empty:
+        st.warning("暂无本地行情数据。请先在数据中心更新数据后再运行稳定性分析。")
+        return
+
+    factors = factors.copy()
+    factors["date"] = pd.to_datetime(factors["date"])
+    min_date = factors["date"].min().date()
+    max_date = factors["date"].max().date()
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        strategy_name = select_strategy("策略名称", "stability_strategy")
+    with col2:
+        start_date = st.date_input("分析起始日期", value=min_date, min_value=min_date, max_value=max_date, key="stability_start")
+    with col3:
+        end_date = st.date_input("分析结束日期", value=max_date, min_value=min_date, max_value=max_date, key="stability_end")
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        train_ratio = st.slider("样本内比例", 0.5, 0.9, 0.7, 0.05, key="stability_train_ratio")
+    with col2:
+        train_months = st.number_input("Walk-forward 训练月数", min_value=1, max_value=120, value=24, key="stability_train_months")
+    with col3:
+        test_months = st.number_input("Walk-forward 测试月数", min_value=1, max_value=60, value=6, key="stability_test_months")
+    with col4:
+        step_months = st.number_input("Walk-forward 步长月数", min_value=1, max_value=60, value=6, key="stability_step_months")
+
+    default_grid = DEFAULT_STABILITY_PARAMETER_GRIDS.get(strategy_name, {})
+    parameter_grid_text = st.text_area(
+        "参数网格 JSON",
+        value=json.dumps(default_grid, ensure_ascii=False, indent=2),
+        height=180,
+        key=f"stability_grid_{strategy_name}",
+    )
+    try:
+        parameter_grid = json.loads(parameter_grid_text) if parameter_grid_text.strip() else {}
+    except json.JSONDecodeError as exc:
+        st.error(f"参数网格 JSON 无法解析：{exc}")
+        return
+
+    cost_config = cost_config_panel(prefix="stability_")
+    exp_col1, exp_col2, exp_col3 = st.columns(3)
+    with exp_col1:
+        experiment_name = st.text_input("实验名称", value=f"{display_strategy_name(strategy_name)} 稳定性分析", key="stability_exp_name")
+    with exp_col2:
+        experiment_tags = st.text_input("实验标签", value="stability, overfit", key="stability_exp_tags")
+    with exp_col3:
+        notes = st.text_input("备注", value="V3.2 stability analysis", key="stability_notes")
+
+    context = {
+        "strategy_name": strategy_name,
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "parameter_grid": parameter_grid,
+        "train_ratio": float(train_ratio),
+        "walk_forward_config": {
+            "train_months": int(train_months),
+            "test_months": int(test_months),
+            "step_months": int(step_months),
+        },
+        "cost_config": config_to_dict(cost_config),
+        "position_config": {},
+        "exit_config": {},
+        "market_config": {},
+    }
+
+    if st.button("运行稳定性分析"):
+        with st.spinner("正在运行样本内 / 样本外、Walk-forward、参数敏感性和过拟合检测..."):
+            result = stability_service().run_stability_analysis(
+                strategy_name=strategy_name,
+                parameter_grid=parameter_grid,
+                start_date=str(start_date),
+                end_date=str(end_date),
+                train_ratio=float(train_ratio),
+                walk_forward_config=context["walk_forward_config"],
+                cost_config=cost_config,
+            )
+        st.session_state["stability_result"] = result
+        st.session_state["stability_context"] = context
+
+    result = st.session_state.get("stability_result")
+    if not result:
+        st.info("设置参数后运行稳定性分析。样本外表现比样本内表现更重要。")
+        return
+    render_stability_result(result)
+
+    if st.button("保存为稳定性实验"):
+        context = st.session_state.get("stability_context", context)
+        experiment_id = experiment_service().save_stability_analysis_result(
+            name=experiment_name,
+            result=result,
+            start_date=context.get("start_date", str(start_date)),
+            end_date=context.get("end_date", str(end_date)),
+            strategy_name=context.get("strategy_name", strategy_name),
+            config={
+                "strategy_config": {
+                    "parameter_grid": context.get("parameter_grid", {}),
+                    "best_params": result.get("best_params", {}),
+                },
+                "cost_config": context.get("cost_config", {}),
+                "position_config": context.get("position_config", {}),
+                "exit_config": context.get("exit_config", {}),
+                "market_config": context.get("market_config", {}),
+                "walk_forward_config": context.get("walk_forward_config", {}),
+                "train_ratio": context.get("train_ratio", train_ratio),
+            },
+            tags=parse_tags(experiment_tags),
+            notes=notes,
+        )
+        st.success(f"稳定性实验已保存：{experiment_id}")
+
+
+def render_stability_result(result: dict[str, object]) -> None:
+    raw_stability = result.get("stability_score", {}) or {}
+    stability = dict(raw_stability) if isinstance(raw_stability, dict) else {"stability_score": raw_stability}
+    raw_overfit = result.get("overfit_result", {}) or {}
+    overfit = dict(raw_overfit) if isinstance(raw_overfit, dict) else {}
+    if "overfit_risk" in result and "overfit_risk" not in overfit:
+        overfit["overfit_risk"] = result.get("overfit_risk")
+    if "overfit_score" in result and "overfit_score" not in overfit:
+        overfit["overfit_score"] = result.get("overfit_score")
+    in_sample = dict(result.get("in_sample_result", {}) or {})
+    out_sample = dict(result.get("out_of_sample_result", {}) or {})
+    walk_forward = dict(result.get("walk_forward_result", {}) or {})
+    sensitivity = dict(result.get("sensitivity_result", {}) or {})
+    regimes = dict(result.get("market_regime_breakdown", {}) or {})
+
+    cols = st.columns(7)
+    cols[0].metric("稳定性评分", num(stability.get("stability_score", 0)))
+    cols[1].metric("过拟合风险", overfit.get("overfit_risk", "-"))
+    cols[2].metric("样本内 net_CAGR", pct(in_sample.get("net_CAGR", 0)))
+    cols[3].metric("样本外 net_CAGR", pct(out_sample.get("net_CAGR", 0)))
+    cols[4].metric("WF 正收益比例", pct(dict(walk_forward.get("summary", {}) or {}).get("positive_test_fold_ratio", 0)))
+    cols[5].metric("参数稳定性", num(sensitivity.get("sensitivity_score", 0)))
+    cols[6].metric("评级", stability.get("final_rating", "-"))
+
+    left, right = st.columns(2)
+    left.plotly_chart(plot_in_sample_vs_out_sample(in_sample, out_sample), use_container_width=True)
+    right.plotly_chart(plot_walk_forward_returns(walk_forward), use_container_width=True)
+    left.plotly_chart(plot_parameter_sensitivity_heatmap(sensitivity), use_container_width=True)
+    right.plotly_chart(plot_regime_stability(regimes), use_container_width=True)
+    regime_source = dict(regimes.get("_meta", {}) or {}).get("regime_source", "unavailable")
+    st.caption(f"市场环境来源：{market_regime_source_label(regime_source)}")
+    st.plotly_chart(plot_overfit_risk_flags(overfit), use_container_width=True)
+
+    tabs = st.tabs(["Walk-forward folds", "参数搜索 Top", "市场环境", "过拟合 flags"])
+    folds = pd.DataFrame(walk_forward.get("folds", []) or [])
+    sensitivity_table = pd.DataFrame(sensitivity.get("top_20_params", []) or sensitivity.get("parameter_table", []) or [])
+    regime_rows = {key: value for key, value in regimes.items() if not str(key).startswith("_")}
+    regime_table = pd.DataFrame.from_dict(regime_rows, orient="index").reset_index(names="regime") if regime_rows else pd.DataFrame()
+    flags = pd.DataFrame({"risk_flag": overfit.get("risk_flags", []) or []})
+    tabs[0].dataframe(folds, use_container_width=True)
+    tabs[1].dataframe(sensitivity_table, use_container_width=True)
+    tabs[2].dataframe(regime_table, use_container_width=True)
+    tabs[3].dataframe(flags, use_container_width=True)
+
+
+def market_regime_source_label(regime_source: object) -> str:
+    labels = {
+        "HS300": "沪深300",
+        "fallback_equal_weight_proxy": "股票池等权代理指数 fallback，仅供参考",
+        "unavailable": "不可用",
+    }
+    return labels.get(str(regime_source), str(regime_source))
+
+
 def _unused_experiment_center_page_v31() -> None:
     st.header("实验中心")
     service = experiment_service()
@@ -1079,6 +1260,10 @@ def experiment_detail_tab(service: ExperimentService, experiments: pd.DataFrame)
         with st.expander("other_config", expanded=False):
             st.json(extra_config, expanded=False)
 
+    if run.get("experiment_type") == "strategy_stability_analysis":
+        st.subheader("稳定性分析详情")
+        render_stability_result(metrics)
+
     equity = experiment_equity_for_chart(detail["equity_curve"])
     left, right = st.columns(2)
     left.plotly_chart(plot_portfolio_equity_curve(equity), use_container_width=True)
@@ -1172,6 +1357,7 @@ PAGES = {
     "参数优化器": parameter_optimizer_page,
     "策略排行榜": strategy_leaderboard_page,
     "组合回测": portfolio_backtest_page,
+    "策略稳定性": strategy_stability_page,
     "实验中心": experiment_center_page,
     "今日选股": today_picks,
     "个股分析": stock_analysis,

@@ -213,3 +213,47 @@ python scripts/validate_project.py
 ```
 
 该脚本会检查关键目录、关键文件、pytest、compileall 和 app import。compileall 会排除 `.git`、`.venv`、`review_packages`、`reports/experiments`、`storage`、`.streamlit`、缓存目录等无关路径，避免生成物污染校验。
+
+## V3.2 策略稳定性与过拟合检测
+
+V3.2 新增“策略稳定性”页面和 `stability/` 模块，用于判断策略是否稳定、是否可能过拟合、是否值得继续研究。该模块只做历史研究，不接入自动交易，不构成投资建议。
+
+### 样本内 / 样本外
+
+样本内（In-Sample）用于参数搜索和选择最佳参数；样本外（Out-of-Sample）不参与调参，只用于验证策略泛化能力。系统按时间顺序切分，不随机打乱时间序列，且测试区间必须晚于训练区间。样本外表现比样本内表现更重要。
+
+### Walk-forward 验证
+
+Walk-forward 会按时间滚动执行：训练窗口内搜索参数，只用训练窗口选择最佳参数，再到随后的测试窗口验证样本外表现。系统记录每个 fold 的训练区间、测试区间、最佳参数、训练指标、测试指标和 degradation，测试区间结果不会用于选择参数。
+
+### 参数敏感性
+
+参数敏感性分析用于判断最佳参数是否是“孤岛”。如果最佳参数显著高于中位数，但相邻参数表现很差，则过拟合风险较高；如果多个相邻参数表现接近，则参数更稳定。`sensitivity_score` 范围为 0 到 100，分数越高表示参数越稳定。
+
+默认参数网格只包含当前策略函数真实支持、或可明确映射到真实策略参数的字段。当前 `pullback_ma20_strategy` 不支持独立的 `volume_ratio_max` 参数，`volume_breakout_strategy` 不支持独立的 `return_min` / `return_max` 参数，因此 V3.2 默认稳定性网格暂不包含这些维度。未知参数会直接报错，避免无效维度污染稳定性结论。
+
+### 过拟合风险
+
+过拟合检测会综合样本内/样本外差异、Sharpe 退化、样本外收益、Walk-forward 正收益比例、参数敏感性、交易次数、参数数量、样本外回撤扩大和交易成本影响，输出 LOW / MEDIUM / HIGH 风险评级、0 到 100 的 `overfit_score`、风险 flags 和研究建议。
+
+### 稳定性评分
+
+`stability_score` 综合 generalization、walk-forward、parameter stability、market regime stability 和 trade sample 五类分数，最终评级为 A/B/C/D。A 代表值得继续研究，D 代表稳定性不足或过拟合风险较高。
+
+### 市场环境分组
+
+稳定性分析会保留市场环境分组结果：BULL、BEAR、SIDEWAYS、HIGH_VOLATILITY。市场环境优先使用本地沪深300指数；如果本地没有沪深300数据，则使用股票池等权代理指数 fallback。每笔交易优先按 `signal_date` 匹配市场环境，没有则按 `buy_date`，再没有则按 `exit_date`，匹配时只使用向前最近一个交易日，不使用未来日期。如果指数数据不足或样本交易过少，页面会提示样本不足，结果仅供参考。
+
+### 实验中心集成
+
+稳定性分析可以保存为 `strategy_stability_analysis` 实验。实验中心可查看稳定性评分、过拟合风险、样本内/样本外对比、Walk-forward fold、参数敏感性、市场环境分组和系统建议，并可导出 Markdown 报告。
+
+### 风险提示
+
+- 稳定性分析基于历史数据，不代表未来收益。
+- 样本外表现好也不保证未来有效。
+- Walk-forward 结果依赖数据质量和参数网格设计。
+- 参数敏感性分析不能完全消除过拟合。
+- 市场环境分组在样本不足时仅供参考。
+- 本工具不构成投资建议。
+- 本工具不支持自动交易。
