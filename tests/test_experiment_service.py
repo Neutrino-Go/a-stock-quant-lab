@@ -183,3 +183,35 @@ def test_best_experiments_returns_empty_for_missing_metric(tmp_path):
     result = service.get_best_experiments(metric="missing_metric")
 
     assert result.empty
+
+
+def test_service_list_experiments_passes_filters_to_store(tmp_path):
+    service = _service(tmp_path)
+    first = service.store.create_experiment_run(
+        name="Portfolio alpha",
+        experiment_type="portfolio_backtest",
+        strategy_name="ensemble_strategy",
+        notes="liquidity ok",
+        tags=["alpha"],
+        rating="A",
+    )
+    service.store.create_experiment_run(
+        name="Single risk",
+        experiment_type="single_strategy_backtest",
+        strategy_name="trend_strength_strategy",
+        tags=["risk"],
+        rating="D",
+    )
+    created = service.build_experiment_detail(first)["run"]["created_at"][:10]
+
+    result = service.list_experiments(
+        experiment_type="portfolio_backtest",
+        strategy_name="ensemble_strategy",
+        rating="A",
+        created_start=created,
+        created_end=created,
+        tag="alpha",
+        keyword="liquidity",
+    )
+
+    assert list(result["id"]) == [first]

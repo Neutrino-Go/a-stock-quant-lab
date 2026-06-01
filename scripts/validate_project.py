@@ -2,12 +2,33 @@ from __future__ import annotations
 
 import compileall
 import importlib
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+EXCLUDED_DIR_NAMES = {
+    ".git",
+    ".venv",
+    "venv",
+    "env",
+    "__pycache__",
+    ".pytest_cache",
+    "review_packages",
+    "storage",
+    ".streamlit",
+}
+EXCLUDED_RELATIVE_DIRS = {
+    Path("reports") / "experiments",
+}
+COMPILE_EXCLUDE_REGEX = re.compile(
+    r"(^|[\\/])("
+    + "|".join(re.escape(name) for name in sorted(EXCLUDED_DIR_NAMES))
+    + r")([\\/]|$)|(^|[\\/])reports[\\/]experiments([\\/]|$)"
+)
 
 REQUIRED_DIRS = [
     "backtest",
@@ -70,12 +91,15 @@ REQUIRED_FILES = [
     "tests/test_experiment_compare.py",
     "tests/test_report_exporter.py",
     "tests/test_experiment_ui_helpers.py",
+    "tests/test_validate_project.py",
+    "pytest.ini",
 ]
 
 
 def main() -> int:
     print("A-Stock Quant Lab local validation")
     print(f"Project root: {PROJECT_ROOT}")
+    print(f"Excluded directories: {', '.join(sorted(EXCLUDED_DIR_NAMES | {'reports/experiments'}))}")
 
     checks = [
         ("directories", check_directories),
@@ -122,7 +146,8 @@ def run_pytest() -> None:
 
 
 def run_compileall() -> None:
-    ok = compileall.compile_dir(PROJECT_ROOT, quiet=1)
+    print("Command: python -m compileall <project> with generated/runtime directories excluded")
+    ok = compileall.compile_dir(PROJECT_ROOT, quiet=1, rx=COMPILE_EXCLUDE_REGEX)
     if not ok:
         raise RuntimeError("compileall reported failures")
 
@@ -135,9 +160,37 @@ def check_app_import() -> None:
 
 
 def run_command(command: list[str]) -> None:
-    completed = subprocess.run(command, cwd=PROJECT_ROOT, text=True)
+    print(f"Command: {' '.join(command)}")
+    completed = subprocess.run(command, cwd=PROJECT_ROOT, text=True, capture_output=True)
+    if completed.stdout:
+        print(completed.stdout, end="")
+    if completed.stderr:
+        print(completed.stderr, end="", file=sys.stderr)
     if completed.returncode != 0:
         raise RuntimeError(f"Command failed with exit code {completed.returncode}: {' '.join(command)}")
+
+
+def should_exclude_path(path: str | Path) -> bool:
+    candidate = Path(path)
+    parts = set(candidate.parts)
+    if parts & EXCLUDED_DIR_NAMES:
+        return True
+    normalized = Path(*candidate.parts) if candidate.parts else candidate
+    for excluded in EXCLUDED_RELATIVE_DIRS:
+        if normalized == excluded or excluded in _parents(normalized):
+            return True
+    return False
+
+
+def _parents(path: Path) -> set[Path]:
+    parents: set[Path] = set()
+    current = path
+    while current.parent != current:
+        current = current.parent
+        parents.add(current)
+        if len(current.parts) <= 1:
+            break
+    return parents
 
 
 if __name__ == "__main__":

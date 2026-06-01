@@ -264,19 +264,29 @@ class ExperimentStore:
         experiment_type: str | None = None,
         strategy_name: str | None = None,
         rating: str | None = None,
+        created_start: str | pd.Timestamp | None = None,
+        created_end: str | pd.Timestamp | None = None,
+        tag: str | None = None,
+        keyword: str | None = None,
         limit: int | None = None,
     ) -> pd.DataFrame:
         conditions: list[str] = []
         params: dict[str, Any] = {}
-        if experiment_type:
+        if experiment_type and experiment_type != "all":
             conditions.append("experiment_type = :experiment_type")
             params["experiment_type"] = experiment_type
-        if strategy_name:
+        if strategy_name and strategy_name != "all":
             conditions.append("strategy_name = :strategy_name")
             params["strategy_name"] = strategy_name
-        if rating:
+        if rating and rating != "all":
             conditions.append("rating = :rating")
             params["rating"] = rating
+        if created_start is not None:
+            conditions.append("date(created_at) >= date(:created_start)")
+            params["created_start"] = _date_or_none(created_start)
+        if created_end is not None:
+            conditions.append("date(created_at) <= date(:created_end)")
+            params["created_end"] = _date_or_none(created_end)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         limit_sql = "LIMIT :limit" if limit else ""
         if limit:
@@ -289,7 +299,15 @@ class ExperimentStore:
                 ).fetchall()
         except sqlite3.Error as exc:
             raise ExperimentStoreError(f"Failed to list experiments: {exc}") from exc
-        return _runs_frame([_decode_run(dict(row)) for row in rows])
+        frame = _runs_frame([_decode_run(dict(row)) for row in rows])
+        if frame.empty:
+            return frame
+        if tag:
+            needle = tag.strip().lower()
+            frame = frame[frame["tags"].map(lambda tags: _tags_match(tags, needle))]
+        if keyword:
+            frame = frame[_keyword_mask(frame, keyword)]
+        return frame.reset_index(drop=True)
 
     def get_experiment_detail(self, experiment_id: str) -> dict[str, Any]:
         try:
@@ -340,9 +358,10 @@ class ExperimentStore:
             "artifacts": artifacts,
         }
 
-    def delete_experiment(self, experiment_id: str) -> None:
+    def delete_experiment(self, experiment_id: str) -> bool:
         try:
             with self._connect() as conn:
+                exists = conn.execute("SELECT 1 FROM experiment_runs WHERE id = ?", (experiment_id,)).fetchone()
                 for table in [
                     "experiment_equity_curves",
                     "experiment_trades",
@@ -353,6 +372,7 @@ class ExperimentStore:
                     conn.execute(f"DELETE FROM {table} WHERE {'id' if table == 'experiment_runs' else 'experiment_id'} = ?", (experiment_id,))
         except sqlite3.Error as exc:
             raise ExperimentStoreError(f"Failed to delete experiment: {exc}") from exc
+        return exists is not None
 
     def duplicate_experiment_config(self, experiment_id: str) -> dict[str, Any]:
         detail = self.get_experiment_detail(experiment_id)
@@ -458,6 +478,27 @@ def _runs_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     ]:
         frame[metric] = frame["metrics_json"].map(lambda metrics, key=metric: metrics.get(key))
     return frame
+
+
+def _tags_match(tags: Any, needle: str) -> bool:
+    if not needle:
+        return True
+    if not isinstance(tags, list):
+        tags = _json_loads(tags, [])
+    return any(needle in str(tag).lower() for tag in (tags or []))
+
+
+def _keyword_mask(frame: pd.DataFrame, keyword: str) -> pd.Series:
+    needle = keyword.strip().lower()
+    if not needle:
+        return pd.Series(True, index=frame.index)
+    columns = [column for column in ["name", "description", "notes", "conclusion"] if column in frame.columns]
+    if not columns:
+        return pd.Series(False, index=frame.index)
+    mask = pd.Series(False, index=frame.index)
+    for column in columns:
+        mask = mask | frame[column].fillna("").astype(str).str.lower().str.contains(needle, regex=False)
+    return mask
 
 
 def _decode_run(row: dict[str, Any]) -> dict[str, Any]:

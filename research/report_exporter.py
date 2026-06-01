@@ -12,6 +12,62 @@ from research.experiment_store import ExperimentStore
 DEFAULT_REPORT_DIR = Path(__file__).resolve().parents[1] / "reports" / "experiments"
 CsvKind = Literal["trades", "orders", "equity_curve"]
 
+EMPTY_CSV_COLUMNS = {
+    "trades": [
+        "id",
+        "experiment_id",
+        "code",
+        "code_text",
+        "name",
+        "strategy_name",
+        "signal_date",
+        "buy_date",
+        "buy_price",
+        "sell_date",
+        "sell_price",
+        "shares",
+        "gross_return",
+        "net_return",
+        "holding_days",
+        "exit_reason",
+        "commission",
+        "stamp_tax",
+        "slippage_cost",
+        "total_cost",
+    ],
+    "orders": [
+        "id",
+        "experiment_id",
+        "code",
+        "code_text",
+        "name",
+        "side",
+        "signal_date",
+        "order_date",
+        "requested_price",
+        "fill_price",
+        "shares",
+        "status",
+        "reason",
+        "gross_amount",
+        "cost",
+        "net_amount",
+    ],
+    "equity_curve": [
+        "id",
+        "experiment_id",
+        "date",
+        "gross_equity",
+        "net_equity",
+        "drawdown",
+        "cash",
+        "market_value",
+        "position_count",
+        "total_equity",
+        "gross_total_equity",
+    ],
+}
+
 
 def export_markdown_report(
     store: ExperimentStore,
@@ -37,11 +93,11 @@ def export_experiment_csv(
     if detail["run"] is None:
         raise KeyError(f"Experiment not found: {experiment_id}")
     if kind == "trades":
-        frame = detail["trades"]
+        frame = _prepare_csv_frame(detail["trades"], kind)
     elif kind == "orders":
-        frame = detail["orders"]
+        frame = _prepare_csv_frame(detail["orders"], kind)
     elif kind == "equity_curve":
-        frame = detail["equity_curve"].copy()
+        frame = _prepare_csv_frame(detail["equity_curve"], kind)
         if not frame.empty and "total_equity" not in frame.columns and "net_equity" in frame.columns:
             frame["total_equity"] = frame["net_equity"]
         if not frame.empty and "gross_total_equity" not in frame.columns and "gross_equity" in frame.columns:
@@ -76,7 +132,100 @@ def _output_path(output_dir: str | Path, experiment_id: str, suffix: str) -> Pat
     return directory / f"experiment_{experiment_id}_{timestamp}.{suffix}"
 
 
+def normalize_stock_code(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if text.endswith(".0"):
+        prefix = text[:-2]
+        if prefix.isdigit():
+            text = prefix
+    if text.isdigit():
+        return text.zfill(6)
+    return text
+
+
+def _prepare_csv_frame(frame: pd.DataFrame, kind: str) -> pd.DataFrame:
+    prepared = frame.copy()
+    if prepared.empty:
+        columns = EMPTY_CSV_COLUMNS.get(kind, list(prepared.columns))
+        return pd.DataFrame(columns=columns)
+    if kind in {"trades", "orders"} and "code" in prepared.columns:
+        prepared["code"] = prepared["code"].map(normalize_stock_code)
+        prepared["code_text"] = prepared["code"].map(lambda code: f'="{code}"' if code else "")
+        columns = list(prepared.columns)
+        if "code_text" in columns and "code" in columns:
+            columns.remove("code_text")
+            code_index = columns.index("code")
+            columns.insert(code_index + 1, "code_text")
+            prepared = prepared.loc[:, columns]
+    return prepared
+
+
 def _markdown_content(detail: dict[str, object]) -> str:
+    run = detail["run"]
+    metrics = run["metrics_json"]
+    config = run["config_json"]
+    trades = detail["trades"]
+
+    best_trade = _best_trade(trades)
+    worst_trade = _worst_trade(trades)
+    avg_holding_days = _avg(trades, "holding_days")
+
+    return f"""# 实验报告
+
+## 基本信息
+- 实验名称：{run["name"]}
+- 实验类型：{run["experiment_type"]}
+- 创建时间：{run["created_at"]}
+- 回测区间：{run.get("start_date") or "-"} 至 {run.get("end_date") or "-"}
+- 策略：{run.get("strategy_name") or "-"}
+- Git Commit：{run.get("git_commit") or "-"}
+
+## 参数配置
+- strategy_config：`{config.get("strategy_config", {})}`
+- cost_config：`{config.get("cost_config", {})}`
+- position_config：`{config.get("position_config", {})}`
+- exit_config：`{config.get("exit_config", {})}`
+
+## 核心指标
+- final_equity：{metrics.get("final_equity", "-")}
+- total_return：{metrics.get("total_return", "-")}
+- net_total_return：{metrics.get("net_total_return", "-")}
+- CAGR：{metrics.get("CAGR", "-")}
+- net_CAGR：{metrics.get("net_CAGR", "-")}
+- max_drawdown：{metrics.get("max_drawdown", "-")}
+- sharpe_ratio：{metrics.get("sharpe_ratio", "-")}
+- win_rate：{metrics.get("win_rate", "-")}
+- cost_impact：{metrics.get("cost_impact", "-")}
+
+## 成本分析
+- commission：{metrics.get("commission", metrics.get("total_commission", _sum(trades, "commission")))}
+- stamp_tax：{metrics.get("stamp_tax", metrics.get("total_stamp_tax", _sum(trades, "stamp_tax")))}
+- regulatory_fee：{metrics.get("regulatory_fee", metrics.get("total_regulatory_fee", _sum(trades, "regulatory_fee")))}
+- transfer_fee：{metrics.get("transfer_fee", metrics.get("total_transfer_fee", _sum(trades, "transfer_fee")))}
+- slippage_cost：{metrics.get("slippage_cost", metrics.get("total_slippage_cost", _sum(trades, "slippage_cost")))}
+
+## 交易摘要
+- total_trades：{metrics.get("total_trades", len(trades))}
+- avg_holding_days：{metrics.get("avg_holding_days", avg_holding_days)}
+- best_trade：{best_trade}
+- worst_trade：{worst_trade}
+
+## 研究结论
+- notes：{run.get("notes") or "-"}
+- conclusion：{run.get("conclusion") or "-"}
+- tags：{", ".join(run.get("tags") or []) or "-"}
+- rating：{run.get("rating") or "unrated"}
+
+## 风险提示
+- 回测结果不代表未来收益
+- 本工具不构成投资建议
+- 本工具不支持自动交易
+"""
+
+
+def _legacy_markdown_content(detail: dict[str, object]) -> str:
     run = detail["run"]
     metrics = run["metrics_json"]
     config = run["config_json"]

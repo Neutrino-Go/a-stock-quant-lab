@@ -173,3 +173,43 @@ python scripts/validate_project.py
 - 实验记录基于当前本地数据，如果后续数据源修正历史数据，旧实验结果不会自动重算。
 - 实验保存的是当次结果快照，不是投资建议；报告导出仅用于个人研究。
 - 本项目不是自动交易系统，不支持实盘下单。
+
+## V3.1.1 实验中心优化
+
+V3.1.1 聚焦实验中心长期研究可用性，不新增策略、不接入自动交易。
+
+### 实验筛选方法
+
+实验中心的实验列表支持按实验类型、策略名称、创建日期区间、标签关键字、评级和关键词筛选。关键词会匹配实验名称、描述、备注和结论。
+
+### 实验排序说明
+
+实验列表支持按 `created_at`、`net_CAGR`、`max_drawdown`、`sharpe_ratio`、`final_equity`、`cost_impact`、`win_rate` 排序。默认“降序 / 最佳优先”会按研究意义排序。
+
+### max_drawdown 负数排序
+
+`max_drawdown` 通常为负数，数值越接近 0 风险越低。例如 `-10%` 优于 `-30%`，因此最佳优先排序时 `-10%` 会排在 `-30%` 前面，空值排最后。
+
+### CSV 股票代码前导 0 保护
+
+导出的 Trades / Orders CSV 会将 `code` 规范为 6 位字符串，例如 `1`、`"1"`、`"000001"` 都导出为 `000001`。由于 Excel 直接打开 CSV 可能吞掉前导 0，系统额外提供 `code_text` 列，例如 `="000001"`，便于 Excel 查看。
+
+CSV 文件使用 `utf-8-sig` 编码，方便 Excel 打开中文内容。
+
+### 报告导出说明
+
+报告导出统一写入 `reports/experiments/`，支持 Markdown、Trades CSV、Orders CSV、Equity CSV 和 Config JSON。导出后页面显示文件路径、文件大小和生成时间，并记录到实验 artifacts 表。
+
+### 删除实验说明
+
+删除实验需要二次确认：先点击“准备删除”，再输入完整实验名称后才能删除。删除会级联删除该实验的资金曲线、交易明细、订单明细和导出记录。
+
+### validate_project.py 使用说明
+
+本地验收命令：
+
+```bash
+python scripts/validate_project.py
+```
+
+该脚本会检查关键目录、关键文件、pytest、compileall 和 app import。compileall 会排除 `.git`、`.venv`、`review_packages`、`reports/experiments`、`storage`、`.streamlit`、缓存目录等无关路径，避免生成物污染校验。

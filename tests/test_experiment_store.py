@@ -206,3 +206,48 @@ def test_list_experiments_filters_and_artifacts(tmp_path):
 
     assert list(filtered["id"]) == [first]
     assert detail["artifacts"].iloc[0]["artifact_type"] == "markdown_report"
+
+
+def test_list_experiments_filters_by_tag_date_and_keyword(tmp_path):
+    store = _store(tmp_path)
+    first = store.create_experiment_run(
+        name="Bull portfolio",
+        experiment_type="portfolio_backtest",
+        strategy_name="ensemble_strategy",
+        description="momentum research",
+        notes="watch liquidity",
+        conclusion="keep",
+        tags=["alpha", "swing"],
+        rating="A",
+        metrics={"net_CAGR": 0.2},
+    )
+    store.create_experiment_run(
+        name="Bear single",
+        experiment_type="single_strategy_backtest",
+        strategy_name="trend_strength_strategy",
+        description="risk test",
+        notes="",
+        conclusion="discard",
+        tags=["risk"],
+        rating="D",
+        metrics={"net_CAGR": -0.1},
+    )
+
+    first_created = store.get_experiment_detail(first)["run"]["created_at"][:10]
+    filtered = store.list_experiments(
+        experiment_type="portfolio_backtest",
+        strategy_name="ensemble_strategy",
+        rating="A",
+        tag="alpha",
+        created_start=first_created,
+        created_end=first_created,
+        keyword="liquidity",
+    )
+
+    assert list(filtered["id"]) == [first]
+
+
+def test_delete_missing_experiment_returns_false(tmp_path):
+    store = _store(tmp_path)
+
+    assert store.delete_experiment("missing-id") is False

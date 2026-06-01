@@ -5,7 +5,12 @@ import json
 import pandas as pd
 
 from research.experiment_store import ExperimentStore
-from research.report_exporter import export_config_json, export_experiment_csv, export_markdown_report
+from research.report_exporter import (
+    export_config_json,
+    export_experiment_csv,
+    export_markdown_report,
+    normalize_stock_code,
+)
 
 
 def _seed(store: ExperimentStore) -> str:
@@ -69,8 +74,14 @@ def test_export_csv_for_trades_orders_and_equity(tmp_path):
     orders_path = export_experiment_csv(store, experiment_id, "orders", output_dir=tmp_path / "reports")
     equity_path = export_experiment_csv(store, experiment_id, "equity_curve", output_dir=tmp_path / "reports")
 
-    assert pd.read_csv(trades_path).iloc[0]["code"] == 1
-    assert pd.read_csv(orders_path).iloc[0]["side"] == "BUY"
+    trades = pd.read_csv(trades_path, dtype={"code": str})
+    orders = pd.read_csv(orders_path, dtype={"code": str})
+
+    assert trades.iloc[0]["code"] == "000001"
+    assert trades.iloc[0]["code_text"] == '="000001"'
+    assert orders.iloc[0]["code"] == "000001"
+    assert orders.iloc[0]["code_text"] == '="000001"'
+    assert orders.iloc[0]["side"] == "BUY"
     assert "total_equity" in pd.read_csv(equity_path).columns
 
 
@@ -118,3 +129,60 @@ def test_export_missing_experiment_raises_key_error(tmp_path):
         assert "Experiment not found" in str(exc)
     else:
         raise AssertionError("Missing experiment should raise")
+
+
+def test_normalize_stock_code_zfills_to_six_digits():
+    assert normalize_stock_code(1) == "000001"
+    assert normalize_stock_code("1") == "000001"
+    assert normalize_stock_code("000001") == "000001"
+
+
+def test_export_csv_uses_utf8_sig_and_preserves_code_text(tmp_path):
+    store = ExperimentStore(tmp_path / "experiments.db")
+    experiment_id = store.create_experiment_run(name="Codes", experiment_type="portfolio_backtest")
+    store.save_trades(experiment_id, pd.DataFrame({"code": [1, "1", "000001"], "net_return": [0.01, 0.02, 0.03]}))
+
+    path = export_experiment_csv(store, experiment_id, "trades", output_dir=tmp_path / "reports")
+    raw = path.read_bytes()
+    frame = pd.read_csv(path, dtype={"code": str})
+
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert list(frame["code"]) == ["000001", "000001", "000001"]
+    assert list(frame["code_text"]) == ['="000001"', '="000001"', '="000001"']
+
+
+def test_empty_trades_csv_has_headers_and_artifact(tmp_path):
+    store = ExperimentStore(tmp_path / "experiments.db")
+    experiment_id = store.create_experiment_run(name="Empty trades", experiment_type="portfolio_backtest")
+    store.save_trades(experiment_id, pd.DataFrame())
+
+    path = export_experiment_csv(store, experiment_id, "trades", output_dir=tmp_path / "reports")
+    frame = pd.read_csv(path)
+    detail = store.get_experiment_detail(experiment_id)
+
+    assert frame.empty
+    assert "code" in frame.columns
+    assert detail["artifacts"].iloc[-1]["artifact_type"] == "csv_export"
+
+
+def test_empty_orders_csv_has_headers(tmp_path):
+    store = ExperimentStore(tmp_path / "experiments.db")
+    experiment_id = store.create_experiment_run(name="Empty orders", experiment_type="portfolio_backtest")
+    store.save_orders(experiment_id, pd.DataFrame())
+
+    path = export_experiment_csv(store, experiment_id, "orders", output_dir=tmp_path / "reports")
+    frame = pd.read_csv(path)
+
+    assert frame.empty
+    assert "code" in frame.columns
+    assert "code_text" in frame.columns
+
+
+def test_equity_csv_uses_utf8_sig(tmp_path):
+    store = ExperimentStore(tmp_path / "experiments.db")
+    experiment_id = store.create_experiment_run(name="Equity", experiment_type="portfolio_backtest")
+    store.save_equity_curve(experiment_id, pd.DataFrame({"date": ["2024-01-01"], "total_equity": [1_000_000]}))
+
+    path = export_experiment_csv(store, experiment_id, "equity_curve", output_dir=tmp_path / "reports")
+
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
