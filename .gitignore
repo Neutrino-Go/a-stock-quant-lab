@@ -3,7 +3,13 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .streamlit/
+.streamlit/secrets.toml
 .venv/
 .chrome-profile/
 .pet-runs/
 *.log
+storage/*.db
+storage/*.sqlite
+reports/experiments/*.csv
+reports/experiments/*.json
+reports/experiments/*.md
