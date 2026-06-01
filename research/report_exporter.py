@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -78,7 +79,7 @@ def export_markdown_report(
     if detail["run"] is None:
         raise KeyError(f"Experiment not found: {experiment_id}")
     output_path = _output_path(output_dir, experiment_id, "md")
-    output_path.write_text(_markdown_content(detail), encoding="utf-8")
+    output_path.write_text(_render_markdown_content(detail), encoding="utf-8")
     store.add_artifact(experiment_id, "markdown_report", output_path)
     return output_path
 
@@ -118,8 +119,6 @@ def export_config_json(
 ) -> Path:
     config_json = store.duplicate_experiment_config(experiment_id)
     output_path = _output_path(output_dir, experiment_id, "config.json")
-    import json
-
     output_path.write_text(json.dumps(config_json, ensure_ascii=False, indent=2), encoding="utf-8")
     store.add_artifact(experiment_id, "json_config", output_path)
     return output_path
@@ -160,6 +159,115 @@ def _prepare_csv_frame(frame: pd.DataFrame, kind: str) -> pd.DataFrame:
             columns.insert(code_index + 1, "code_text")
             prepared = prepared.loc[:, columns]
     return prepared
+
+
+def _render_markdown_content(detail: dict[str, object]) -> str:
+    run = detail["run"]
+    metrics = run["metrics_json"]
+    config = run["config_json"]
+    trades = detail["trades"]
+    stability_section = _stability_markdown_section(run, metrics)
+    return f"""# 实验报告
+
+## 基本信息
+- 实验名称：{run["name"]}
+- 实验类型：{run["experiment_type"]}
+- 创建时间：{run["created_at"]}
+- 回测区间：{run.get("start_date") or "-"} 至 {run.get("end_date") or "-"}
+- 策略：{run.get("strategy_name") or "-"}
+- Git Commit：{run.get("git_commit") or "-"}
+
+## 参数配置
+```json
+{json.dumps(config, ensure_ascii=False, indent=2)}
+```
+
+## 核心指标
+- final_equity：{metrics.get("final_equity", "-")}
+- total_return：{metrics.get("total_return", "-")}
+- net_total_return：{metrics.get("net_total_return", "-")}
+- CAGR：{metrics.get("CAGR", "-")}
+- net_CAGR：{metrics.get("net_CAGR", "-")}
+- max_drawdown：{metrics.get("max_drawdown", "-")}
+- sharpe_ratio：{metrics.get("sharpe_ratio", "-")}
+- win_rate：{metrics.get("win_rate", "-")}
+- cost_impact：{metrics.get("cost_impact", "-")}
+
+## 成本分析
+- commission：{metrics.get("commission", metrics.get("total_commission", _sum(trades, "commission")))}
+- stamp_tax：{metrics.get("stamp_tax", metrics.get("total_stamp_tax", _sum(trades, "stamp_tax")))}
+- regulatory_fee：{metrics.get("regulatory_fee", metrics.get("total_regulatory_fee", _sum(trades, "regulatory_fee")))}
+- transfer_fee：{metrics.get("transfer_fee", metrics.get("total_transfer_fee", _sum(trades, "transfer_fee")))}
+- slippage_cost：{metrics.get("slippage_cost", metrics.get("total_slippage_cost", _sum(trades, "slippage_cost")))}
+
+## 交易摘要
+- total_trades：{metrics.get("total_trades", len(trades))}
+- avg_holding_days：{metrics.get("avg_holding_days", _avg(trades, "holding_days"))}
+- best_trade：{_best_trade(trades)}
+- worst_trade：{_worst_trade(trades)}
+{stability_section}
+## 研究结论
+- notes：{run.get("notes") or "-"}
+- conclusion：{run.get("conclusion") or "-"}
+- tags：{", ".join(run.get("tags") or []) or "-"}
+- rating：{run.get("rating") or "unrated"}
+
+## 风险提示
+- 回测结果不代表未来收益
+- 本工具不构成投资建议
+- 本工具不支持自动交易
+"""
+
+
+def _stability_markdown_section(run: dict[str, object], metrics: dict[str, object]) -> str:
+    if run.get("experiment_type") != "strategy_stability_analysis":
+        return ""
+    stability = metrics.get("stability_score")
+    if isinstance(stability, dict):
+        stability_score = stability.get("stability_score", metrics.get("stability_score_value", "-"))
+    else:
+        stability_score = stability if stability is not None else metrics.get("stability_score_value", "-")
+    overfit = metrics.get("overfit_result") if isinstance(metrics.get("overfit_result"), dict) else {}
+    overfit_risk = metrics.get("overfit_risk", overfit.get("overfit_risk", "-"))
+    overfit_score = metrics.get("overfit_score", overfit.get("overfit_score", "-"))
+    warning = ""
+    if overfit_risk == "HIGH":
+        warning = "\n> 该策略存在较高过拟合风险，不建议直接用于实盘。\n"
+    return f"""
+
+## 稳定性分析
+- stability_score：{stability_score}
+- overfit_risk：{overfit_risk}
+- overfit_score：{overfit_score}
+- recommendation：{metrics.get("recommendation", "-")}
+
+样本外表现比样本内表现更重要。
+{warning}
+## 样本内 / 样本外表现
+```json
+{json.dumps({"in_sample": metrics.get("in_sample_result", {}), "out_of_sample": metrics.get("out_of_sample_result", {})}, ensure_ascii=False, indent=2)}
+```
+
+## Walk-forward 结果
+```json
+{json.dumps(metrics.get("walk_forward_result", {}), ensure_ascii=False, indent=2)}
+```
+
+## 参数敏感性
+```json
+{json.dumps(metrics.get("sensitivity_result", {}), ensure_ascii=False, indent=2)}
+```
+
+## 市场环境分组表现
+```json
+{json.dumps(metrics.get("market_regime_breakdown", {}), ensure_ascii=False, indent=2)}
+```
+
+## 过拟合风险提示
+```json
+{json.dumps(metrics.get("overfit_result", {}), ensure_ascii=False, indent=2)}
+```
+"""
 
 
 def _markdown_content(detail: dict[str, object]) -> str:

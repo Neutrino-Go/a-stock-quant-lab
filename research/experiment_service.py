@@ -138,6 +138,53 @@ class ExperimentService:
             metrics=_clean_metrics(metrics),
         )
 
+    def save_stability_analysis_result(
+        self,
+        name: str,
+        result: dict[str, object],
+        start_date: str | pd.Timestamp,
+        end_date: str | pd.Timestamp,
+        strategy_name: str,
+        config: dict[str, Any],
+        tags: list[str] | None = None,
+        notes: str = "",
+        conclusion: str = "",
+        status: str = "completed",
+        data_snapshot_info: dict[str, Any] | None = None,
+    ) -> str:
+        metrics = _clean_metrics(dict(result))
+        out_sample = dict(result.get("out_of_sample_result", {}) or {})
+        stability = dict(result.get("stability_score", {}) or {})
+        overfit = dict(result.get("overfit_result", {}) or {})
+        metrics.update(
+            {
+                "strategy_name": strategy_name,
+                "net_CAGR": out_sample.get("net_CAGR", metrics.get("net_CAGR", 0)),
+                "max_drawdown": out_sample.get("max_drawdown", metrics.get("max_drawdown", 0)),
+                "sharpe_ratio": out_sample.get("sharpe_ratio", metrics.get("sharpe_ratio", 0)),
+                "total_trades": out_sample.get("total_trades", metrics.get("total_trades", 0)),
+                "stability_score_value": stability.get("stability_score", 0),
+                "overfit_risk": overfit.get("overfit_risk", ""),
+                "overfit_score": overfit.get("overfit_score", 0),
+                "recommendation": result.get("recommendation", overfit.get("recommendation", "")),
+            }
+        )
+        return self.store.create_experiment_run(
+            name=name,
+            experiment_type="strategy_stability_analysis",
+            status=status,
+            start_date=start_date,
+            end_date=end_date,
+            strategy_name=strategy_name,
+            notes=notes,
+            conclusion=conclusion,
+            tags=tags or [],
+            git_commit=current_git_commit(),
+            data_snapshot_info=data_snapshot_info or current_data_snapshot(),
+            config=_normalize_config(config),
+            metrics=metrics,
+        )
+
     def build_experiment_summary(self) -> pd.DataFrame:
         return self.store.list_experiments()
 

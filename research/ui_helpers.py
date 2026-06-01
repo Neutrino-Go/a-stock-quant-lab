@@ -22,6 +22,7 @@ EXPERIMENT_TYPE_OPTIONS = [
     "parameter_optimization",
     "strategy_leaderboard",
     "market_regime_analysis",
+    "strategy_stability_analysis",
 ]
 
 SORTABLE_EXPERIMENT_COLUMNS = [
@@ -113,6 +114,30 @@ def sort_experiment_table(experiments: pd.DataFrame, sort_by: str, ascending: bo
 
 def delete_confirmation_matches(experiment_name: str | None, confirmation: str | None) -> bool:
     return bool(experiment_name) and str(confirmation or "").strip() == str(experiment_name)
+
+
+def stability_result_to_frames(result: dict[str, Any] | None) -> dict[str, pd.DataFrame]:
+    if not result:
+        return {
+            "walk_forward_folds": pd.DataFrame(),
+            "parameter_table": pd.DataFrame(),
+            "market_regimes": pd.DataFrame(),
+            "risk_flags": pd.DataFrame(),
+        }
+    walk_forward = result.get("walk_forward_result", {}) or {}
+    sensitivity = result.get("sensitivity_result", {}) or {}
+    regimes = result.get("market_regime_breakdown", {}) or {}
+    overfit = result.get("overfit_result", {}) or {}
+    return {
+        "walk_forward_folds": pd.DataFrame(walk_forward.get("folds", []) or []),
+        "parameter_table": pd.DataFrame(sensitivity.get("parameter_table", []) or []),
+        "market_regimes": (
+            pd.DataFrame.from_dict(regimes, orient="index").reset_index(names="regime")
+            if regimes
+            else pd.DataFrame()
+        ),
+        "risk_flags": pd.DataFrame({"risk_flag": overfit.get("risk_flags", []) or []}),
+    }
 
 
 def _sort_frame_by_metric(frame: pd.DataFrame, column: str, metric_name: str, ascending: bool) -> pd.DataFrame:
