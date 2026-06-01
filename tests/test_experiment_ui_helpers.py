@@ -4,10 +4,13 @@ import pandas as pd
 
 from research.ui_helpers import (
     RATING_OPTIONS,
+    delete_confirmation_matches,
     experiment_option_label,
     filter_experiment_table,
     parse_tags,
     rating_display_name,
+    sort_experiment_table,
+    sort_metric_values,
 )
 
 
@@ -15,9 +18,18 @@ def test_parse_tags_accepts_commas_spaces_and_deduplicates():
     assert parse_tags("trend, portfolio  trend\nwatch") == ["trend", "portfolio", "watch"]
 
 
+def test_parse_tags_handles_empty_values():
+    assert parse_tags("") == []
+    assert parse_tags(None) == []
+
+
+def test_parse_tags_accepts_chinese_commas():
+    assert parse_tags("alpha，beta,alpha") == ["alpha", "beta"]
+
+
 def test_rating_display_name_includes_research_meaning():
-    assert rating_display_name("A") == "A：值得继续研究"
-    assert rating_display_name("unknown") == "unrated：未评级"
+    assert rating_display_name("A").startswith("A:")
+    assert rating_display_name("unknown").startswith("unrated:")
     assert "unrated" in RATING_OPTIONS
 
 
@@ -82,6 +94,69 @@ def test_filter_experiment_table_by_created_date_range():
     assert list(result["id"]) == ["2"]
 
 
-def test_parse_tags_handles_empty_values():
-    assert parse_tags("") == []
-    assert parse_tags(None) == []
+def test_filter_experiment_table_by_keyword_search():
+    df = pd.DataFrame(
+        [
+            {
+                "id": "1",
+                "name": "Momentum run",
+                "description": "bull market",
+                "notes": "",
+                "conclusion": "",
+                "tags": [],
+                "rating": "A",
+            },
+            {
+                "id": "2",
+                "name": "Pullback run",
+                "description": "",
+                "notes": "watch liquidity",
+                "conclusion": "discard",
+                "tags": [],
+                "rating": "D",
+            },
+        ]
+    )
+
+    result = filter_experiment_table(df, keyword="liquidity")
+
+    assert list(result["id"]) == ["2"]
+
+
+def test_sort_metric_values_uses_metric_semantics_and_nulls_last():
+    assert sort_metric_values("max_drawdown", [-0.30, None, -0.10, -0.20]) == [-0.10, -0.20, -0.30, None]
+    assert sort_metric_values("net_CAGR", [0.05, None, 0.20]) == [0.20, 0.05, None]
+    assert sort_metric_values("cost_impact", [0.05, None, 0.01]) == [0.01, 0.05, None]
+
+
+def test_sort_experiment_table_orders_drawdown_cost_and_dates():
+    df = pd.DataFrame(
+        [
+            {"id": "1", "max_drawdown": -0.30, "cost_impact": 0.05, "created_at": "2024-01-01"},
+            {"id": "2", "max_drawdown": -0.10, "cost_impact": 0.01, "created_at": "2024-02-01"},
+            {"id": "3", "max_drawdown": None, "cost_impact": None, "created_at": None},
+        ]
+    )
+
+    assert list(sort_experiment_table(df, "max_drawdown", ascending=False)["id"]) == ["2", "1", "3"]
+    assert list(sort_experiment_table(df, "cost_impact", ascending=False)["id"]) == ["2", "1", "3"]
+    assert list(sort_experiment_table(df, "created_at", ascending=False)["id"]) == ["2", "1", "3"]
+
+
+def test_sort_experiment_table_can_reverse_best_first_order():
+    df = pd.DataFrame(
+        [
+            {"id": "1", "net_CAGR": 0.20, "cost_impact": 0.01},
+            {"id": "2", "net_CAGR": 0.05, "cost_impact": 0.05},
+        ]
+    )
+
+    assert list(sort_experiment_table(df, "net_CAGR", ascending=True)["id"]) == ["2", "1"]
+    assert list(sort_experiment_table(df, "cost_impact", ascending=True)["id"]) == ["2", "1"]
+
+
+def test_delete_confirmation_matches_requires_exact_experiment_name():
+    assert delete_confirmation_matches("Research Run", "Research Run")
+    assert delete_confirmation_matches("Research Run", " Research Run ")
+    assert not delete_confirmation_matches("Research Run", "research run")
+    assert not delete_confirmation_matches("Research Run", "")

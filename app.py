@@ -22,11 +22,15 @@ from research.experiment_compare import compare_experiments
 from research.experiment_service import ExperimentService
 from research.report_exporter import export_config_json, export_experiment_csv, export_markdown_report
 from research.ui_helpers import (
+    EXPERIMENT_TYPE_OPTIONS,
     RATING_OPTIONS,
+    SORTABLE_EXPERIMENT_COLUMNS,
+    delete_confirmation_matches,
     experiment_option_label,
     filter_experiment_table,
     parse_tags,
     rating_display_name,
+    sort_experiment_table,
 )
 from report.charts import (
     plot_cost_breakdown,
@@ -659,23 +663,23 @@ def portfolio_backtest_page() -> None:
     tabs[3].dataframe(with_display_strategy_names(positions), use_container_width=True)
 
 
-def experiment_center_page() -> None:
+def _unused_experiment_center_page_v31() -> None:
     st.header("实验中心")
     service = experiment_service()
     experiments = service.build_experiment_summary()
     tabs = st.tabs(["实验列表", "实验详情", "实验对比", "报告导出"])
 
     with tabs[0]:
-        experiment_list_tab(service, experiments)
+        _unused_experiment_list_tab_v31(service, experiments)
     with tabs[1]:
-        experiment_detail_tab(service, experiments)
+        _unused_experiment_detail_tab_v31(service, experiments)
     with tabs[2]:
         experiment_compare_tab(service, experiments)
     with tabs[3]:
-        experiment_export_tab(service, experiments)
+        _unused_experiment_export_tab_v31(service, experiments)
 
 
-def experiment_list_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+def _unused_experiment_list_tab_v31(service: ExperimentService, experiments: pd.DataFrame) -> None:
     if experiments.empty:
         st.info("当前暂无实验记录。请先在“组合回测”或“回测中心”中运行并保存一次实验。")
         return
@@ -732,7 +736,7 @@ def experiment_list_tab(service: ExperimentService, experiments: pd.DataFrame) -
             st.success("实验已删除，请刷新实验列表。")
 
 
-def experiment_detail_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+def _unused_experiment_detail_tab_v31(service: ExperimentService, experiments: pd.DataFrame) -> None:
     selected_id = st.session_state.get("selected_experiment_id") or select_experiment_id(experiments, "detail_select_experiment")
     if not selected_id:
         st.info("请选择一个实验查看详情。")
@@ -805,7 +809,7 @@ def experiment_compare_tab(service: ExperimentService, experiments: pd.DataFrame
         st.bar_chart(result["cost_comparison"].set_index("name")[["total_cost", "cost_impact"]])
 
 
-def experiment_export_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+def _unused_experiment_export_tab_v31(service: ExperimentService, experiments: pd.DataFrame) -> None:
     selected_id = select_experiment_id(experiments, "export_select_experiment")
     if not selected_id:
         st.info("请选择一个实验导出报告。")
@@ -825,7 +829,7 @@ def experiment_export_tab(service: ExperimentService, experiments: pd.DataFrame)
             st.download_button(f"下载 {path.name}", data=data, file_name=path.name)
 
 
-def select_experiment_id(experiments: pd.DataFrame, key: str) -> str | None:
+def _legacy_select_experiment_id(experiments: pd.DataFrame, key: str) -> str | None:
     if experiments.empty:
         return None
     labels = {experiment_option_label(row): row["id"] for _, row in experiments.iterrows()}
@@ -949,6 +953,216 @@ def render_stock_signal_stats(factors: pd.DataFrame, signals: pd.DataFrame) -> N
     cols[1].metric("平均收益", pct(avg_return))
     cols[2].metric("最佳策略", best_strategy)
     cols[3].metric("最差策略", worst_strategy)
+
+
+def experiment_list_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+    if experiments.empty:
+        st.info("当前暂无实验记录。请先在“组合回测”或“回测中心”中运行并保存一次实验。")
+        return
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        available_types = set(experiments["experiment_type"].dropna().astype(str).tolist())
+        type_options = [value for value in EXPERIMENT_TYPE_OPTIONS if value == "all" or value in available_types]
+        experiment_type = st.selectbox("实验类型", type_options)
+    with col2:
+        strategy_options = ["all"] + sorted(experiments["strategy_name"].dropna().astype(str).unique().tolist())
+        strategy_name = st.selectbox("策略名称", strategy_options)
+    with col3:
+        rating = st.selectbox(
+            "评级",
+            ["all"] + RATING_OPTIONS,
+            format_func=lambda value: "all" if value == "all" else rating_display_name(value),
+        )
+
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        created_start = st.date_input("创建起始日期", value=None)
+    with col5:
+        created_end = st.date_input("创建结束日期", value=None)
+    with col6:
+        tag = st.text_input("标签关键字")
+    keyword = st.text_input("关键词搜索（名称 / 描述 / 备注 / 结论）")
+
+    sort_col, direction_col = st.columns(2)
+    with sort_col:
+        sort_by = st.selectbox("排序字段", SORTABLE_EXPERIMENT_COLUMNS, index=0)
+    with direction_col:
+        direction = st.selectbox("排序方向", ["降序 / 最佳优先", "升序 / 反向"], index=0)
+
+    filtered = filter_experiment_table(
+        experiments,
+        experiment_type=experiment_type,
+        strategy_name=strategy_name,
+        start_date=created_start,
+        end_date=created_end,
+        tag=tag or None,
+        rating=rating,
+        keyword=keyword or None,
+    )
+    filtered = sort_experiment_table(filtered, sort_by, ascending=direction.startswith("升序"))
+
+    if filtered.empty:
+        st.info("没有找到符合条件的实验，请调整筛选条件。")
+        return
+
+    display_columns = [
+        "name",
+        "experiment_type",
+        "strategy_name",
+        "start_date",
+        "end_date",
+        "net_CAGR",
+        "max_drawdown",
+        "sharpe_ratio",
+        "win_rate",
+        "cost_impact",
+        "rating",
+        "tags",
+        "created_at",
+    ]
+    st.dataframe(filtered.loc[:, [column for column in display_columns if column in filtered.columns]], use_container_width=True)
+
+    selected_id = select_experiment_id(filtered, "list_select_experiment")
+    if not selected_id:
+        return
+
+    st.session_state["selected_experiment_id"] = selected_id
+    selected_row = filtered.loc[filtered["id"].eq(selected_id)].iloc[0].to_dict()
+    if st.button("准备删除", key="prepare_delete_experiment"):
+        st.session_state["delete_experiment_id"] = selected_id
+    if st.session_state.get("delete_experiment_id") == selected_id:
+        experiment_name = str(selected_row.get("name") or "")
+        st.warning(f"删除实验将同时删除资金曲线、交易、订单和导出记录。请输入实验名称确认：{experiment_name}")
+        confirmation = st.text_input("输入实验名称确认删除", key=f"delete_confirm_{selected_id}")
+        can_delete = delete_confirmation_matches(experiment_name, confirmation)
+        if st.button("确认删除实验", disabled=not can_delete, key=f"delete_button_{selected_id}"):
+            deleted = service.store.delete_experiment(selected_id)
+            st.session_state.pop("delete_experiment_id", None)
+            st.session_state.pop("selected_experiment_id", None)
+            if deleted:
+                st.success("实验已删除")
+            else:
+                st.info("实验不存在，可能已被删除。")
+            st.rerun()
+
+
+def experiment_detail_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+    selected_id = st.session_state.get("selected_experiment_id")
+    if not selected_id:
+        selected_id = select_experiment_id(experiments, "detail_select_experiment", default_first=False)
+    if not selected_id:
+        st.info("请先在实验列表中选择一个实验。")
+        return
+
+    detail = service.build_experiment_detail(selected_id)
+    if detail["run"] is None:
+        st.warning("未找到该实验，可能已被删除。")
+        return
+    run = detail["run"]
+    metrics = run["metrics_json"]
+
+    cols = st.columns(4)
+    cols[0].metric("实验类型", run["experiment_type"])
+    cols[1].metric("策略", run.get("strategy_name") or "-")
+    cols[2].metric("评级", rating_display_name(run.get("rating")))
+    cols[3].metric("Git Commit", (run.get("git_commit") or "-")[:8])
+
+    render_portfolio_metrics(metrics, float(metrics.get("initial_cash", 1_000_000)))
+
+    config = run["config_json"]
+    for key in ["strategy_config", "cost_config", "position_config", "exit_config", "market_config"]:
+        with st.expander(key, expanded=False):
+            st.json(config.get(key, {}), expanded=False)
+    extra_config = {key: value for key, value in config.items() if key not in {"strategy_config", "cost_config", "position_config", "exit_config", "market_config"}}
+    if extra_config:
+        with st.expander("other_config", expanded=False):
+            st.json(extra_config, expanded=False)
+
+    equity = experiment_equity_for_chart(detail["equity_curve"])
+    left, right = st.columns(2)
+    left.plotly_chart(plot_portfolio_equity_curve(equity), use_container_width=True)
+    right.plotly_chart(plot_portfolio_drawdown_curve(equity.loc[:, ["date", "drawdown"]] if "drawdown" in equity.columns else pd.DataFrame()), use_container_width=True)
+    left.plotly_chart(plot_cost_breakdown(detail["trades"]), use_container_width=True)
+
+    table_tabs = st.tabs(["Trades", "Orders", "Daily Equity"])
+    table_tabs[0].dataframe(detail["trades"], use_container_width=True)
+    table_tabs[1].dataframe(detail["orders"], use_container_width=True)
+    table_tabs[2].dataframe(detail["equity_curve"], use_container_width=True)
+
+    notes = st.text_area("Notes", value=run.get("notes") or "", key=f"notes_{selected_id}")
+    conclusion = st.text_area("Conclusion", value=run.get("conclusion") or "", key=f"conclusion_{selected_id}")
+    tags = st.text_input("Tags", value=", ".join(run.get("tags") or []), key=f"tags_{selected_id}")
+    rating_value = run.get("rating") if run.get("rating") in RATING_OPTIONS else "unrated"
+    rating = st.selectbox(
+        "Rating",
+        RATING_OPTIONS,
+        index=RATING_OPTIONS.index(rating_value),
+        format_func=rating_display_name,
+        key=f"rating_{selected_id}",
+    )
+    if st.button("保存备注 / 结论"):
+        service.store.update_notes(selected_id, notes=notes, conclusion=conclusion)
+        st.success("备注和结论已保存。")
+    if st.button("保存标签"):
+        service.store.update_tags(selected_id, parse_tags(tags))
+        st.success("标签已保存。")
+        st.rerun()
+    if st.button("保存评级"):
+        service.store.update_rating(selected_id, rating)
+        st.success("评级已保存。")
+        st.rerun()
+
+
+def experiment_export_tab(service: ExperimentService, experiments: pd.DataFrame) -> None:
+    selected_id = select_experiment_id(experiments, "export_select_experiment")
+    if not selected_id:
+        st.info("请选择一个实验导出报告。")
+        return
+    exports = [
+        ("导出 Markdown", lambda: export_markdown_report(service.store, selected_id)),
+        ("导出 Trades CSV", lambda: export_experiment_csv(service.store, selected_id, "trades")),
+        ("导出 Orders CSV", lambda: export_experiment_csv(service.store, selected_id, "orders")),
+        ("导出 Equity CSV", lambda: export_experiment_csv(service.store, selected_id, "equity_curve")),
+        ("导出 Config JSON", lambda: export_config_json(service.store, selected_id)),
+    ]
+    for label, action in exports:
+        if st.button(label):
+            path = action()
+            size = path.stat().st_size
+            generated_at = pd.Timestamp.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            st.success(f"已导出：{path}")
+            st.caption(f"文件大小：{size} bytes | 生成时间：{generated_at}")
+            data = path.read_bytes()
+            st.download_button(f"下载 {path.name}", data=data, file_name=path.name)
+
+
+def select_experiment_id(experiments: pd.DataFrame, key: str, default_first: bool = True) -> str | None:
+    if experiments.empty:
+        return None
+    labels = {experiment_option_label(row): row["id"] for _, row in experiments.iterrows()}
+    options = list(labels)
+    if default_first:
+        selected = st.selectbox("选择实验", options, key=key)
+        return labels.get(selected)
+    selected = st.selectbox("选择实验", [""] + options, key=key, format_func=lambda value: value or "请选择")
+    return labels.get(selected) if selected else None
+
+
+def experiment_center_page() -> None:
+    st.header("实验中心")
+    service = experiment_service()
+    experiments = service.build_experiment_summary()
+    tabs = st.tabs(["实验列表", "实验详情", "实验对比", "报告导出"])
+
+    with tabs[0]:
+        experiment_list_tab(service, experiments)
+    with tabs[1]:
+        experiment_detail_tab(service, experiments)
+    with tabs[2]:
+        experiment_compare_tab(service, experiments)
+    with tabs[3]:
+        experiment_export_tab(service, experiments)
 
 
 PAGES = {

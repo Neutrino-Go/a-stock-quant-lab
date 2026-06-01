@@ -141,6 +141,28 @@ class ExperimentService:
     def build_experiment_summary(self) -> pd.DataFrame:
         return self.store.list_experiments()
 
+    def list_experiments(
+        self,
+        experiment_type: str | None = None,
+        strategy_name: str | None = None,
+        rating: str | None = None,
+        created_start: str | pd.Timestamp | None = None,
+        created_end: str | pd.Timestamp | None = None,
+        tag: str | None = None,
+        keyword: str | None = None,
+        limit: int | None = None,
+    ) -> pd.DataFrame:
+        return self.store.list_experiments(
+            experiment_type=experiment_type,
+            strategy_name=strategy_name,
+            rating=rating,
+            created_start=created_start,
+            created_end=created_end,
+            tag=tag,
+            keyword=keyword,
+            limit=limit,
+        )
+
     def build_experiment_detail(self, experiment_id: str) -> dict[str, Any]:
         return self.store.get_experiment_detail(experiment_id)
 
