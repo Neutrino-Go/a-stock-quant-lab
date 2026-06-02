@@ -4,7 +4,11 @@ import json
 
 import pandas as pd
 
-from workflow.research_report import export_research_json_summary, export_research_markdown_report
+from workflow.research_report import (
+    export_research_candidates_csv,
+    export_research_json_summary,
+    export_research_markdown_report,
+)
 from workflow.research_store import ResearchStore
 
 
@@ -75,10 +79,41 @@ def test_export_candidates_csv_handles_empty_candidates(tmp_path):
     store = ResearchStore(tmp_path / "research.db")
     run_id = store.create_research_run(name="Research", strategy_name="trend_strength_strategy")
 
-    from workflow.research_report import export_research_candidates_csv
-
     path = export_research_candidates_csv(store, run_id, pd.DataFrame(), output_dir=tmp_path / "reports")
     frame = pd.read_csv(path)
+    detail = store.get_research_run_detail(run_id)
 
     assert frame.empty
     assert "candidate_name" in frame.columns
+    assert "overall_score" in frame.columns
+    assert detail["artifacts"].iloc[0]["artifact_type"] == "csv_candidates"
+
+
+def test_export_candidates_csv_writes_filtered_candidates_without_research_artifact(tmp_path):
+    store = ResearchStore(tmp_path / "research.db")
+    frame = pd.DataFrame(
+        [
+            {
+                "id": "candidate-1",
+                "candidate_name": "Trend candidate",
+                "strategy_name": "trend_strength_strategy",
+                "status": "active",
+                "overall_score": 83,
+                "final_rating": "A",
+                "overfit_risk": "LOW",
+                "net_CAGR": 0.16,
+                "max_drawdown": -0.12,
+                "sharpe_ratio": 1.3,
+                "walk_forward_positive_ratio": 0.67,
+                "parameter_stability_score": 78,
+                "created_at": "2026-01-01T00:00:00",
+            }
+        ]
+    )
+
+    path = export_research_candidates_csv(store, None, frame, output_dir=tmp_path / "reports")
+    exported = pd.read_csv(path)
+
+    assert exported.iloc[0]["candidate_name"] == "Trend candidate"
+    assert exported.iloc[0]["overall_score"] == 83
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")

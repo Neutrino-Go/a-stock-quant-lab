@@ -116,17 +116,26 @@ def test_strategy_candidate_filters_update_and_archive(tmp_path):
         status="active",
     )
 
-    store.update_strategy_candidate(candidate_id, notes="review monthly", status="watching")
+    store.update_strategy_candidate(
+        candidate_id,
+        notes="review monthly",
+        status="watching",
+        tags=["trend", "edited"],
+    )
     filtered = store.list_strategy_candidates(
         strategy_name="trend_strength_strategy",
         status="watching",
         rating="A",
         overfit_risk="LOW",
-        tag="trend",
+        tag="edited",
     )
     store.archive_strategy_candidate(candidate_id)
     archived = store.get_strategy_candidate(candidate_id)
 
     assert filtered.iloc[0]["id"] == candidate_id
     assert filtered.iloc[0]["net_CAGR"] == 0.2
+    assert filtered.iloc[0]["notes"] == "review monthly"
+    assert filtered.iloc[0]["tags"] == ["trend", "edited"]
+    assert filtered.iloc[0]["overall_score"] is None
+    assert filtered.iloc[0]["final_rating"] == "A"
     assert archived["status"] == "archived"

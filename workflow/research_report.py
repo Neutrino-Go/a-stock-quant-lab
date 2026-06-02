@@ -47,7 +47,7 @@ def export_research_json_summary(
 
 def export_research_candidates_csv(
     store: ResearchStore,
-    research_run_id: str,
+    research_run_id: str | None,
     candidates: pd.DataFrame,
     output_dir: str | Path = DEFAULT_RESEARCH_REPORT_DIR,
 ) -> Path:
@@ -56,16 +56,22 @@ def export_research_candidates_csv(
         "strategy_name",
         "candidate_name",
         "status",
+        "overall_score",
+        "final_rating",
         "stability_score",
         "overfit_risk",
         "net_CAGR",
         "max_drawdown",
         "sharpe_ratio",
+        "walk_forward_positive_ratio",
+        "parameter_stability_score",
+        "created_at",
     ]
     frame = candidates.copy() if not candidates.empty else pd.DataFrame(columns=columns)
-    path = _output_path(output_dir, research_run_id, "candidates.csv")
+    path = _output_path(output_dir, research_run_id or "candidate_library", "candidates.csv")
     frame.to_csv(path, index=False, encoding="utf-8-sig")
-    store.save_research_artifact(research_run_id, "csv_candidates", path)
+    if research_run_id:
+        store.save_research_artifact(research_run_id, "csv_candidates", path)
     return path
 
 

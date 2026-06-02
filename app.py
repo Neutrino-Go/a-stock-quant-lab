@@ -53,7 +53,7 @@ from report.charts import (
 from stability.stability_service import DEFAULT_STABILITY_PARAMETER_GRIDS, StrategyStabilityService
 from strategy.metadata import STRATEGY_DESCRIPTIONS, display_strategy_name
 from workflow.research_models import ResearchConfig
-from workflow.research_report import export_research_json_summary, export_research_markdown_report
+from workflow.research_report import export_research_candidates_csv, export_research_json_summary, export_research_markdown_report
 from workflow.research_store import ResearchStore
 from workflow.research_templates import get_research_template
 from workflow.research_workflow import StrategyResearchWorkflow
@@ -1464,7 +1464,7 @@ def research_runs_tab(store: ResearchStore) -> None:
     col1, col2, col3 = st.columns(3)
     with col1:
         strategy_filter = st.selectbox(
-            "策略筛选",
+            "策略名称",
             ["all"] + list(STRATEGY_OPTIONS.values()),
             format_func=lambda value: "all" if value == "all" else display_strategy_name(value),
             key="research_runs_strategy",
@@ -1473,32 +1473,84 @@ def research_runs_tab(store: ResearchStore) -> None:
         status_filter = st.selectbox("状态", ["all", "draft", "running", "completed", "failed", "cancelled"], key="research_runs_status")
     with col3:
         decision_filter = st.selectbox("决策", ["all", "continue_research", "add_to_candidates", "watch", "reject", "failed"], key="research_runs_decision")
-    keyword = st.text_input("关键词", key="research_runs_keyword")
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        created_start = st.date_input("创建起始日期", value=None, key="research_runs_created_start")
+    with col5:
+        created_end = st.date_input("创建结束日期", value=None, key="research_runs_created_end")
+    with col6:
+        tag_filter = st.text_input("标签关键字", key="research_runs_tag")
+    keyword = st.text_input("关键词（名称 / 备注 / 决策原因）", key="research_runs_keyword")
     runs = store.list_research_runs(
         strategy_name=strategy_filter,
         status=status_filter,
         decision=decision_filter,
+        created_start=created_start,
+        created_end=created_end,
+        tag=tag_filter or None,
         keyword=keyword or None,
     )
     if runs.empty:
         st.info("当前暂无研究任务，或没有符合筛选条件的记录。")
         return
-    display_columns = ["name", "strategy_name", "status", "research_template", "decision", "overall_score", "final_rating", "created_at"]
+    display_columns = [
+        "name",
+        "strategy_name",
+        "status",
+        "research_template",
+        "decision",
+        "overall_score",
+        "final_rating",
+        "best_candidate_id",
+        "created_at",
+    ]
     st.dataframe(runs.loc[:, [column for column in display_columns if column in runs.columns]], use_container_width=True)
     selected = select_research_run_id(runs, "research_runs_select")
-    if selected:
-        detail = store.get_research_run_detail(selected)
-        st.subheader("研究步骤")
-        st.dataframe(detail["steps"], use_container_width=True)
-        st.subheader("研究汇总")
-        st.json(detail["run"].get("summary_json", {}), expanded=False)
+    if not selected:
+        return
+    detail = store.get_research_run_detail(selected)
+    run = detail["run"]
+    st.subheader("研究详情")
+    cols = st.columns(4)
+    cols[0].metric("状态", run.get("status", "-"))
+    cols[1].metric("决策", run.get("decision", "-"))
+    cols[2].metric("best_candidate_id", run.get("best_candidate_id") or "-")
+    cols[3].metric("Git Commit", (run.get("git_commit") or "-")[:8])
+    st.json(run.get("summary_json", {}), expanded=False)
+
+    st.subheader("研究步骤")
+    st.dataframe(detail["steps"], use_container_width=True)
+    if not detail["steps"].empty and "experiment_id" in detail["steps"].columns:
+        linked = detail["steps"]["experiment_id"].dropna().astype(str)
+        st.caption("Linked experiment IDs: " + (", ".join(linked.tolist()) if not linked.empty else "-"))
+
+    st.subheader("Artifacts / 报告路径")
+    st.dataframe(detail["artifacts"], use_container_width=True)
+
+    st.subheader("删除研究任务")
+    if st.button("准备删除研究任务", key=f"prepare_delete_research_{selected}"):
+        st.session_state["delete_research_run_id"] = selected
+    if st.session_state.get("delete_research_run_id") == selected:
+        run_name = str(run.get("name") or "")
+        st.warning("删除研究任务会删除 steps/artifacts，但不会删除候选策略库中的记录。请输入完整研究任务名称确认删除。")
+        confirmation = st.text_input("输入研究任务名称确认删除", key=f"delete_research_confirm_{selected}")
+        can_delete = delete_confirmation_matches(run_name, confirmation)
+        if st.button("确认删除研究任务", disabled=not can_delete, key=f"delete_research_button_{selected}"):
+            deleted = store.delete_research_run(selected)
+            st.session_state.pop("delete_research_run_id", None)
+            if deleted:
+                st.success("研究任务已删除。")
+            else:
+                st.info("研究任务不存在，可能已被删除。")
+            st.rerun()
 
 
 def research_candidates_tab(store: ResearchStore) -> None:
+    st.info("候选策略仅表示值得继续研究，不代表可以买入或保证盈利。")
     col1, col2, col3 = st.columns(3)
     with col1:
         strategy_filter = st.selectbox(
-            "策略",
+            "策略名称",
             ["all"] + list(STRATEGY_OPTIONS.values()),
             format_func=lambda value: "all" if value == "all" else display_strategy_name(value),
             key="candidate_strategy",
@@ -1507,29 +1559,71 @@ def research_candidates_tab(store: ResearchStore) -> None:
         status_filter = st.selectbox("候选状态", ["all", "active", "watching", "rejected", "archived"], key="candidate_status")
     with col3:
         overfit_filter = st.selectbox("过拟合风险", ["all", "LOW", "MEDIUM", "HIGH"], key="candidate_overfit")
-    candidates = store.list_strategy_candidates(strategy_name=strategy_filter, status=status_filter, overfit_risk=overfit_filter)
+    col4, col5 = st.columns(2)
+    with col4:
+        rating_filter = st.selectbox("评级", ["all", "A", "B", "C", "D"], key="candidate_rating")
+    with col5:
+        tag_filter = st.text_input("标签关键字", key="candidate_tag")
+    candidates = store.list_strategy_candidates(
+        strategy_name=strategy_filter,
+        status=status_filter,
+        rating=rating_filter,
+        overfit_risk=overfit_filter,
+        tag=tag_filter or None,
+    )
     if candidates.empty:
-        st.info("当前暂无候选策略。")
+        st.info("当前暂无候选策略，或没有符合筛选条件的候选记录。")
         return
     display_columns = [
         "candidate_name",
         "strategy_name",
         "status",
-        "stability_score",
+        "overall_score",
         "overfit_risk",
         "net_CAGR",
         "max_drawdown",
         "sharpe_ratio",
+        "walk_forward_positive_ratio",
+        "parameter_stability_score",
         "created_at",
     ]
-    st.dataframe(candidates.loc[:, [column for column in display_columns if column in candidates.columns]], use_container_width=True)
+    table = candidates.loc[:, [column for column in display_columns if column in candidates.columns]].copy()
+    if "overall_score" in table.columns:
+        table = table.rename(columns={"overall_score": "研究综合分"})
+    st.dataframe(table, use_container_width=True)
+
+    if st.button("导出当前筛选候选 CSV"):
+        path = export_research_candidates_csv(store, None, candidates)
+        st.success(f"已导出：{path}")
+        st.caption(f"文件大小：{path.stat().st_size} bytes")
+        st.download_button(f"下载 {path.name}", data=path.read_bytes(), file_name=path.name, key="download_candidate_filter_csv")
+
     selected = select_candidate_id(candidates, "candidate_select")
     if selected:
         candidate = store.get_strategy_candidate(selected)
-        st.json(candidate, expanded=False)
-        if candidate and candidate.get("status") != "archived" and st.button("归档候选策略"):
-            store.archive_strategy_candidate(selected)
-            st.success("候选策略已归档。")
+        if not candidate:
+            st.warning("未找到该候选策略，可能已被删除。")
+            return
+        st.subheader("候选详情")
+        scorecard = dict(candidate.get("scorecard_json", {}) or {})
+        metrics = dict(candidate.get("metrics_json", {}) or {})
+        detail_cols = st.columns(3)
+        detail_cols[0].metric("scorecard overall_score", num(scorecard.get("overall_score", 0)))
+        detail_cols[1].metric("parameter_stability_score", num(metrics.get("parameter_stability_score", 0)))
+        detail_cols[2].metric("regime_stability_score", num(metrics.get("regime_stability_score", 0)))
+        with st.expander("scorecard_json", expanded=False):
+            st.json(scorecard, expanded=False)
+        with st.expander("metrics_json", expanded=False):
+            st.json(metrics, expanded=False)
+
+        status_options = ["active", "watching", "rejected", "archived"]
+        current_status = candidate.get("status") if candidate.get("status") in status_options else "watching"
+        new_status = st.selectbox("修改状态", status_options, index=status_options.index(current_status), key=f"candidate_status_edit_{selected}")
+        new_notes = st.text_area("notes", value=candidate.get("notes") or "", key=f"candidate_notes_{selected}")
+        new_tags = st.text_input("tags", value=", ".join(candidate.get("tags") or []), key=f"candidate_tags_{selected}")
+        if st.button("保存候选策略修改", key=f"save_candidate_{selected}"):
+            store.update_strategy_candidate(selected, status=new_status, notes=new_notes, tags=parse_tags(new_tags))
+            st.success("候选策略已保存。")
             st.rerun()
 
 
@@ -1539,9 +1633,14 @@ def research_reports_tab(store: ResearchStore) -> None:
     if not selected:
         st.info("请选择一个研究任务导出报告。")
         return
+    detail = store.get_research_run_detail(selected)
+    run = detail["run"]
+    candidate_id = (run.get("summary_json", {}) or {}).get("candidate_id") or run.get("best_candidate_id") if run else None
+    candidate_frame = _candidate_frame_for_research(store, candidate_id)
     exports = [
         ("导出 Markdown 研究报告", lambda: export_research_markdown_report(store, selected)),
         ("导出 JSON Summary", lambda: export_research_json_summary(store, selected)),
+        ("导出 candidates CSV", lambda: export_research_candidates_csv(store, selected, candidate_frame)),
     ]
     for label, action in exports:
         if st.button(label):
@@ -1549,6 +1648,22 @@ def research_reports_tab(store: ResearchStore) -> None:
             st.success(f"已导出：{path}")
             st.caption(f"文件大小：{path.stat().st_size} bytes")
             st.download_button(f"下载 {path.name}", data=path.read_bytes(), file_name=path.name)
+
+    st.subheader("已有 artifacts")
+    refreshed = store.get_research_run_detail(selected)
+    artifacts = refreshed["artifacts"]
+    if artifacts.empty:
+        st.info("当前研究任务暂无导出记录。")
+    else:
+        columns = [column for column in ["artifact_type", "file_path", "created_at"] if column in artifacts.columns]
+        st.dataframe(artifacts.loc[:, columns], use_container_width=True)
+
+
+def _candidate_frame_for_research(store: ResearchStore, candidate_id: str | None) -> pd.DataFrame:
+    if not candidate_id:
+        return pd.DataFrame()
+    candidate = store.get_strategy_candidate(candidate_id)
+    return pd.DataFrame([candidate]) if candidate else pd.DataFrame()
 
 
 def select_research_run_id(runs: pd.DataFrame, key: str) -> str | None:

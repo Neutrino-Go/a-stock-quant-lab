@@ -499,7 +499,12 @@ def _runs_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 def _candidates_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    frame["overall_score"] = frame["scorecard_json"].map(lambda item: dict(item or {}).get("overall_score"))
+    frame["final_rating"] = frame["scorecard_json"].map(lambda item: dict(item or {}).get("final_rating"))
+    return frame
 
 
 def _decode_run(row: dict[str, Any]) -> dict[str, Any]:
