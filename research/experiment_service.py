@@ -185,6 +185,55 @@ class ExperimentService:
             metrics=metrics,
         )
 
+    def save_candidate_revalidation_result(
+        self,
+        name: str,
+        candidate_id: str,
+        result: dict[str, object],
+        start_date: str | pd.Timestamp,
+        end_date: str | pd.Timestamp,
+        strategy_name: str,
+        config: dict[str, Any],
+        tags: list[str] | None = None,
+        notes: str = "",
+        status: str = "completed",
+        data_snapshot_info: dict[str, Any] | None = None,
+    ) -> str:
+        latest = dict(result.get("latest_metrics", {}) or {})
+        comparison = dict(result.get("comparison", {}) or {})
+        decision = dict(result.get("decision", {}) or {})
+        metrics = _clean_metrics(
+            {
+                "candidate_id": candidate_id,
+                "revalidation_run_id": result.get("revalidation_id"),
+                "recommended_action": decision.get("recommended_action"),
+                "baseline_metrics": result.get("baseline_metrics", {}),
+                "latest_metrics": latest,
+                "comparison": comparison,
+                "decision": decision,
+                "net_CAGR": latest.get("net_CAGR"),
+                "max_drawdown": latest.get("max_drawdown"),
+                "sharpe_ratio": latest.get("sharpe_ratio"),
+                "total_trades": latest.get("total_trades"),
+                "overfit_risk": latest.get("overfit_risk"),
+                "stability_score": latest.get("stability_score"),
+            }
+        )
+        return self.store.create_experiment_run(
+            name=name,
+            experiment_type="candidate_revalidation",
+            status=status,
+            start_date=start_date,
+            end_date=end_date,
+            strategy_name=strategy_name,
+            notes=notes,
+            tags=tags or [],
+            git_commit=current_git_commit(),
+            data_snapshot_info=data_snapshot_info or current_data_snapshot(),
+            config=_normalize_config(config),
+            metrics=metrics,
+        )
+
     def build_experiment_summary(self) -> pd.DataFrame:
         return self.store.list_experiments()
 

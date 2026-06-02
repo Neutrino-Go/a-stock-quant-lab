@@ -16,4 +16,8 @@ reports/experiments/*.md
 reports/research/*.csv
 reports/research/*.json
 reports/research/*.md
+reports/candidates/*.csv
+reports/candidates/*.json
+reports/candidates/*.md
+reports/candidates/*.png
 review_packages/

@@ -2,11 +2,26 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 from backtest.backtest_engine import apply_realistic_costs_to_trades, backtest_signals, run_strategy_backtest
+from candidate.candidate_models import CandidateRevalidationConfig
+from candidate.candidate_report import (
+    export_lifecycle_events_csv,
+    export_revalidation_history_csv,
+    export_revalidation_markdown_report,
+)
+from candidate.candidate_revalidator import CandidateRevalidator
+from candidate.candidate_store import CandidateStore
+from candidate.candidate_ui_helpers import (
+    action_to_candidate_status,
+    format_revalidation_mode,
+    revalidation_summary_metrics,
+    run_batch_revalidation,
+)
 from data.data_updater import DataUpdateService
 from data.database import get_database_status, get_stock_daily, get_stock_list
 from execution.cost_model import TradingCostConfig
@@ -97,11 +112,26 @@ def research_store() -> ResearchStore:
 
 
 @st.cache_resource
+def candidate_store() -> CandidateStore:
+    return CandidateStore()
+
+
+@st.cache_resource
 def research_workflow_service() -> StrategyResearchWorkflow:
     return StrategyResearchWorkflow(
         research_store=research_store(),
         stability_service=stability_service(),
         factor_data_loader=load_factor_data,
+    )
+
+
+@st.cache_resource
+def candidate_revalidator_service() -> CandidateRevalidator:
+    return CandidateRevalidator(
+        research_store=research_store(),
+        candidate_store=candidate_store(),
+        stability_service=stability_service(),
+        experiment_service=experiment_service(),
     )
 
 
@@ -1616,6 +1646,20 @@ def research_candidates_tab(store: ResearchStore) -> None:
         with st.expander("metrics_json", expanded=False):
             st.json(metrics, expanded=False)
 
+        latest = candidate_store().get_candidate_with_latest_revalidation(selected).get("latest_revalidation")
+        st.subheader("最近复检结果")
+        if latest:
+            review_cols = st.columns(3)
+            review_cols[0].metric("recommended_action", latest.get("recommended_action") or "-")
+            review_cols[1].metric("最近复检时间", str(latest.get("created_at") or "-")[:19])
+            review_cols[2].metric("latest net_CAGR", pct(dict(latest.get("latest_metrics_json", {}) or {}).get("net_CAGR")))
+        else:
+            st.info("该候选策略尚未复检。请在侧边栏进入候选复检页面进行复检。")
+        events = candidate_store().list_lifecycle_events(selected)
+        if not events.empty:
+            st.caption("生命周期日志摘要")
+            st.dataframe(events.head(5), use_container_width=True)
+
         status_options = ["active", "watching", "rejected", "archived"]
         current_status = candidate.get("status") if candidate.get("status") in status_options else "watching"
         new_status = st.selectbox("修改状态", status_options, index=status_options.index(current_status), key=f"candidate_status_edit_{selected}")
@@ -1700,6 +1744,268 @@ def select_experiment_id(experiments: pd.DataFrame, key: str, default_first: boo
     return labels.get(selected) if selected else None
 
 
+def candidate_revalidation_page() -> None:
+    st.header("候选复检")
+    st.info("候选策略仅表示值得继续研究，不代表可以买入或保证盈利。")
+    store = candidate_store()
+    research = research_store()
+    tabs = st.tabs(["复检仪表盘", "单个候选复检", "批量复检", "复检历史", "生命周期日志"])
+    with tabs[0]:
+        candidate_dashboard_tab(research, store)
+    with tabs[1]:
+        candidate_single_revalidation_tab(research, store)
+    with tabs[2]:
+        candidate_batch_revalidation_tab(research, store)
+    with tabs[3]:
+        candidate_history_tab(store)
+    with tabs[4]:
+        candidate_lifecycle_tab(research, store)
+
+
+def candidate_dashboard_tab(research: ResearchStore, store: CandidateStore) -> None:
+    candidates = research.list_strategy_candidates()
+    due = store.list_candidates_due_for_review(max_age_days=30)
+    history = store.list_revalidation_runs()
+    status_counts = candidates["status"].value_counts().to_dict() if not candidates.empty else {}
+    cols = st.columns(5)
+    cols[0].metric("候选总数", int(len(candidates)))
+    cols[1].metric("active", int(status_counts.get("active", 0)))
+    cols[2].metric("watching", int(status_counts.get("watching", 0)))
+    cols[3].metric("rejected", int(status_counts.get("rejected", 0)))
+    cols[4].metric("archived", int(status_counts.get("archived", 0)))
+    more = st.columns(4)
+    more[0].metric("需要复检", int(len(due)))
+    summary = revalidation_summary_metrics(history)
+    more[1].metric("最近复检", str(summary["last_revalidation_at"])[:19])
+    avg_stability = candidates["stability_score"].dropna().mean() if not candidates.empty and "stability_score" in candidates else 0
+    more[2].metric("平均 stability_score", num(avg_stability))
+    risk_counts = candidates["overfit_risk"].value_counts().to_dict() if not candidates.empty and "overfit_risk" in candidates else {}
+    more[3].metric("overfit_risk 分布", ", ".join(f"{key}: {value}" for key, value in risk_counts.items()) or "-")
+    if due.empty:
+        st.info("当前没有需要复检的候选策略。")
+        return
+    columns = [
+        "candidate_name",
+        "strategy_name",
+        "status",
+        "last_revalidation_at",
+        "days_since_revalidation",
+        "latest_recommended_action",
+        "latest_net_CAGR",
+        "latest_max_drawdown",
+        "latest_overfit_risk",
+    ]
+    st.dataframe(due.loc[:, [column for column in columns if column in due.columns]], use_container_width=True)
+
+
+def candidate_single_revalidation_tab(research: ResearchStore, store: CandidateStore) -> None:
+    candidates = research.list_strategy_candidates(status="all")
+    if candidates.empty:
+        st.info("当前暂无候选策略。请先通过研究工作流生成候选策略。")
+        return
+    selected = select_candidate_id(candidates, "single_candidate_revalidation_select")
+    if not selected:
+        return
+    detail = store.get_candidate_with_latest_revalidation(selected)
+    candidate = detail["candidate"]
+    if not candidate:
+        st.warning("未找到候选策略，可能已被删除。")
+        return
+
+    st.subheader("候选当前信息")
+    info_cols = st.columns(4)
+    info_cols[0].metric("strategy_name", candidate.get("strategy_name", "-"))
+    info_cols[1].metric("status", candidate.get("status", "-"))
+    info_cols[2].metric("source_research_run_id", str(candidate.get("source_research_run_id") or "-")[:8])
+    info_cols[3].metric("source_experiment_id", str(candidate.get("source_experiment_id") or "-")[:8])
+    with st.expander("params_json", expanded=False):
+        st.json(candidate.get("params_json", {}), expanded=False)
+    with st.expander("baseline metrics", expanded=False):
+        st.json(candidate.get("metrics_json", {}), expanded=False)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        mode = st.selectbox("复检模式", ["forward_only", "recent_window", "full_retest"], format_func=format_revalidation_mode, key="candidate_single_mode")
+    with col2:
+        recent_months = st.number_input("recent_months", min_value=1, max_value=60, value=6, key="candidate_single_recent_months")
+    with col3:
+        save_as_experiment = st.checkbox("保存为 experiment", value=True, key="candidate_single_save_exp")
+    date_cols = st.columns(2)
+    with date_cols[0]:
+        review_start = st.date_input("复检起始日期（可选）", value=None, key="candidate_single_start")
+    with date_cols[1]:
+        review_end = st.date_input("复检结束日期（可选）", value=None, key="candidate_single_end")
+    notes = st.text_input("notes", value="candidate revalidation", key="candidate_single_notes")
+    tags = st.text_input("tags", value="candidate, revalidation", key="candidate_single_tags")
+    cost_config = cost_config_panel(prefix="candidate_single_cost_")
+
+    if st.button("运行复检", key="run_single_candidate_revalidation"):
+        config = CandidateRevalidationConfig(
+            candidate_id=selected,
+            mode=mode,
+            review_start_date=str(review_start) if review_start else None,
+            review_end_date=str(review_end) if review_end else None,
+            recent_months=int(recent_months),
+            cost_config=config_to_dict(cost_config),
+            walk_forward_config={"train_months": 24, "test_months": 6, "step_months": 6},
+            save_as_experiment=save_as_experiment,
+            notes=notes,
+            tags=parse_tags(tags),
+        )
+        with st.spinner("正在同步运行候选复检..."):
+            result = candidate_revalidator_service().run_revalidation(config)
+        st.session_state["candidate_revalidation_result"] = result.to_dict()
+        st.rerun()
+
+    result = st.session_state.get("candidate_revalidation_result")
+    if result and result.get("candidate_id") == selected:
+        render_candidate_revalidation_result(result, candidate, store)
+
+
+def render_candidate_revalidation_result(result: dict[str, object], candidate: dict[str, object], store: CandidateStore) -> None:
+    st.subheader("baseline vs latest")
+    baseline = dict(result.get("baseline_metrics", {}) or {})
+    latest = dict(result.get("latest_metrics", {}) or {})
+    cols = st.columns(4)
+    cols[0].metric("baseline net_CAGR", pct(baseline.get("net_CAGR")))
+    cols[1].metric("latest net_CAGR", pct(latest.get("net_CAGR")))
+    cols[2].metric("latest max_drawdown", pct(latest.get("max_drawdown")))
+    cols[3].metric("latest overfit_risk", latest.get("overfit_risk") or "-")
+    st.subheader("差异比较")
+    st.dataframe(pd.DataFrame([result.get("comparison", {})]), use_container_width=True)
+    decision = dict(result.get("decision", {}) or {})
+    action = str(result.get("recommended_action") or decision.get("recommended_action") or "continue_monitoring")
+    st.subheader("生命周期建议")
+    st.metric("recommended_action", action)
+    st.write(result.get("action_reason") or decision.get("action_reason") or "-")
+    flags = decision.get("flags", []) or []
+    if flags:
+        st.dataframe(pd.DataFrame({"risk_flags": flags}), use_container_width=True)
+    target_status = action_to_candidate_status(action, str(candidate.get("status") or "watching"))
+    if st.button("应用建议到候选状态", key=f"apply_candidate_action_{result.get('revalidation_id')}"):
+        if target_status == candidate.get("status"):
+            st.info("该建议不会改变当前候选状态。")
+        else:
+            ok = store.apply_candidate_status_change(str(candidate["id"]), target_status, str(result.get("action_reason") or "candidate revalidation action"))
+            store.update_revalidation_run(
+                str(result.get("revalidation_id")),
+                applied_action=ok,
+                old_candidate_status=candidate.get("status"),
+                new_candidate_status=target_status,
+            )
+            st.success(f"状态已更新为 {target_status}" if ok else "候选策略不存在，无法更新状态。")
+            st.rerun()
+    if st.button("导出复检报告", key=f"export_candidate_report_{result.get('revalidation_id')}"):
+        path = export_revalidation_markdown_report(store, str(result.get("revalidation_id")))
+        st.success(f"已导出：{path}")
+        st.caption(f"文件大小：{path.stat().st_size} bytes")
+        st.download_button(f"下载 {path.name}", data=path.read_bytes(), file_name=path.name)
+
+
+def candidate_batch_revalidation_tab(research: ResearchStore, store: CandidateStore) -> None:
+    st.info("批量复检会同步运行，候选较多时可能耗时较久。默认不自动应用建议。")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        status_filter = st.selectbox("候选状态", ["active", "watching", "all"], key="batch_candidate_status")
+    with col2:
+        strategy_filter = st.selectbox("策略名称", ["all"] + list(STRATEGY_OPTIONS.values()), format_func=lambda value: "all" if value == "all" else display_strategy_name(value), key="batch_candidate_strategy")
+    with col3:
+        max_age_days = st.number_input("max_age_days", min_value=0, max_value=365, value=30, key="batch_max_age_days")
+    with col4:
+        max_count = st.number_input("最多复检数量", min_value=1, max_value=100, value=10, key="batch_max_count")
+    tag = st.text_input("标签关键字", key="batch_candidate_tag")
+    mode = st.selectbox("复检模式", ["forward_only", "recent_window"], format_func=format_revalidation_mode, key="batch_revalidation_mode")
+    due = store.list_candidates_due_for_review(max_age_days=int(max_age_days))
+    if status_filter != "all" and not due.empty:
+        due = due[due["status"].eq(status_filter)]
+    if strategy_filter != "all" and not due.empty:
+        due = due[due["strategy_name"].eq(strategy_filter)]
+    if tag and not due.empty:
+        due = due[due["tags"].map(lambda tags: any(tag.lower() in str(item).lower() for item in tags))]
+    due = due.head(int(max_count)).reset_index(drop=True)
+    if due.empty:
+        st.info("当前没有符合条件的待复检候选策略。")
+        return
+    st.dataframe(due.loc[:, [column for column in ["candidate_name", "strategy_name", "status", "days_since_revalidation"] if column in due.columns]], use_container_width=True)
+    if st.button("运行批量复检", key="run_batch_candidate_revalidation"):
+        configs = [CandidateRevalidationConfig(candidate_id=row["id"], mode=mode, recent_months=6, tags=parse_tags(tag)) for _, row in due.iterrows()]
+        with st.spinner("正在同步批量复检..."):
+            rows = run_batch_revalidation(candidate_revalidator_service(), configs)
+        display = []
+        for row in rows:
+            latest = dict(row.get("latest_metrics", {}) or {})
+            display.append(
+                {
+                    "candidate_id": row.get("candidate_id"),
+                    "status": row.get("status"),
+                    "recommended_action": row.get("recommended_action"),
+                    "latest_net_CAGR": latest.get("net_CAGR"),
+                    "latest_max_drawdown": latest.get("max_drawdown"),
+                    "error_message": row.get("error_message"),
+                }
+            )
+        st.session_state["candidate_batch_results"] = display
+    if st.session_state.get("candidate_batch_results"):
+        st.dataframe(pd.DataFrame(st.session_state["candidate_batch_results"]), use_container_width=True)
+
+
+def candidate_history_tab(store: CandidateStore) -> None:
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        strategy_name = st.selectbox("策略名称", ["all"] + list(STRATEGY_OPTIONS.values()), format_func=lambda value: "all" if value == "all" else display_strategy_name(value), key="history_strategy")
+    with col2:
+        mode = st.selectbox("模式", ["all", "forward_only", "recent_window", "full_retest"], key="history_mode")
+    with col3:
+        action = st.selectbox("recommended_action", ["all", "keep_active", "downgrade_to_watching", "reject", "archive", "needs_more_data", "continue_monitoring"], key="history_action")
+    status = st.selectbox("状态", ["all", "completed", "failed", "draft"], key="history_status")
+    history = store.list_revalidation_runs(strategy_name=strategy_name, mode=mode, recommended_action=action, status=status)
+    if history.empty:
+        st.info("当前暂无复检历史。")
+        return
+    columns = ["candidate_name", "strategy_name", "mode", "status", "review_start_date", "review_end_date", "recommended_action", "latest_net_CAGR", "latest_max_drawdown", "latest_overfit_risk", "created_at"]
+    st.dataframe(history.loc[:, [column for column in columns if column in history.columns]], use_container_width=True)
+    if st.button("导出复检历史 CSV"):
+        path = export_revalidation_history_csv(history, Path("reports/candidates/revalidation_history.csv"))
+        st.success(f"已导出：{path}")
+        st.download_button(f"下载 {path.name}", data=path.read_bytes(), file_name=path.name)
+    labels = {f"{row['candidate_name']} | {row['recommended_action']} | {str(row['id'])[:8]}": row["id"] for _, row in history.iterrows()}
+    selected = st.selectbox("选择复检详情", list(labels), key="history_detail_select")
+    detail = store.get_revalidation_run(labels[selected])
+    if detail:
+        with st.expander("baseline_metrics_json", expanded=False):
+            st.json(detail.get("baseline_metrics_json", {}), expanded=False)
+        with st.expander("latest_metrics_json", expanded=False):
+            st.json(detail.get("latest_metrics_json", {}), expanded=False)
+        with st.expander("comparison_json", expanded=False):
+            st.json(detail.get("comparison_json", {}), expanded=False)
+        with st.expander("decision_json", expanded=False):
+            st.json(detail.get("decision_json", {}), expanded=False)
+
+
+def candidate_lifecycle_tab(research: ResearchStore, store: CandidateStore) -> None:
+    candidates = research.list_strategy_candidates()
+    candidate_id = select_candidate_id(candidates, "lifecycle_candidate_select") if not candidates.empty else None
+    event_type = st.selectbox("event_type", ["all", "created", "revalidated", "status_changed", "note_updated", "archived", "rejected"], key="lifecycle_event_type")
+    events = store.list_lifecycle_events(candidate_id=candidate_id, event_type=event_type)
+    if events.empty:
+        st.info("当前暂无生命周期日志。")
+    else:
+        columns = ["candidate_name", "event_type", "old_status", "new_status", "message", "created_at"]
+        st.dataframe(events.loc[:, [column for column in columns if column in events.columns]], use_container_width=True)
+        if st.button("导出生命周期日志 CSV"):
+            path = export_lifecycle_events_csv(events, Path("reports/candidates/lifecycle_events.csv"))
+            st.success(f"已导出：{path}")
+            st.download_button(f"下载 {path.name}", data=path.read_bytes(), file_name=path.name)
+    if candidate_id:
+        note = st.text_input("添加手动 note event", key="candidate_lifecycle_note")
+        if st.button("保存 note event", disabled=not bool(note.strip())):
+            candidate = research.get_strategy_candidate(candidate_id)
+            status = candidate.get("status") if candidate else None
+            store.create_lifecycle_event(candidate_id, "note_updated", status, status, note)
+            st.success("生命周期 note 已保存。")
+            st.rerun()
+
+
 def experiment_center_page() -> None:
     st.header("实验中心")
     service = experiment_service()
@@ -1725,6 +2031,7 @@ PAGES = {
     "组合回测": portfolio_backtest_page,
     "策略稳定性": strategy_stability_page,
     "研究工作流": research_workflow_page,
+    "候选复检": candidate_revalidation_page,
     "实验中心": experiment_center_page,
     "今日选股": today_picks,
     "个股分析": stock_analysis,

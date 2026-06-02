@@ -11,6 +11,7 @@ ExperimentType = Literal[
     "strategy_leaderboard",
     "market_regime_analysis",
     "strategy_stability_analysis",
+    "candidate_revalidation",
 ]
 
 ExperimentStatus = Literal["completed", "failed", "draft"]
@@ -23,6 +24,7 @@ EXPERIMENT_TYPES = [
     "strategy_leaderboard",
     "market_regime_analysis",
     "strategy_stability_analysis",
+    "candidate_revalidation",
 ]
 
 EXPERIMENT_STATUSES = ["completed", "failed", "draft"]

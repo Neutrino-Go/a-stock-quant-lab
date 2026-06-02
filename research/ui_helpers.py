@@ -23,6 +23,7 @@ EXPERIMENT_TYPE_OPTIONS = [
     "strategy_leaderboard",
     "market_regime_analysis",
     "strategy_stability_analysis",
+    "candidate_revalidation",
 ]
 
 SORTABLE_EXPERIMENT_COLUMNS = [

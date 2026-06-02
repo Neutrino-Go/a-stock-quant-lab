@@ -58,8 +58,10 @@ def init_db(engine: Engine | None = None) -> None:
             )
         )
         from workflow.research_store import RESEARCH_SCHEMA_SQL
+        from candidate.candidate_store import CANDIDATE_SCHEMA_SQL
 
         conn.connection.executescript(RESEARCH_SCHEMA_SQL)
+        conn.connection.executescript(CANDIDATE_SCHEMA_SQL)
 
 
 def _normalize_code(value: Any) -> str:
