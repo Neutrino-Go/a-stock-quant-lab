@@ -13,4 +13,7 @@ storage/*.sqlite
 reports/experiments/*.csv
 reports/experiments/*.json
 reports/experiments/*.md
+reports/research/*.csv
+reports/research/*.json
+reports/research/*.md
 review_packages/
