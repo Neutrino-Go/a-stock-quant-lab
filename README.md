@@ -306,3 +306,50 @@ V3.3 新增“研究工作流”页面和 `workflow/` 模块，用于把参数�
 - 历史回测不代表未来收益，样本外表现也不能保证未来有效。
 - 研究结论只用于个人研究，不构成投资建议。
 - 本工具不支持自动交易、实盘下单或收益承诺。
+
+## V3.4 候选策略复检与生命周期管理
+
+V3.4 新增“候选复检”页面和 `candidate/` 模块，用于对候选策略库中的参数组合做持续复检、记录复检历史、生成生命周期建议和导出研究报告。候选策略只是“值得继续研究”的对象，不是买入清单。
+
+### 什么是候选策略
+
+候选策略来自 V3.3 研究工作流的评分卡结果，保存了 `strategy_name`、`params_json`、`scorecard_json`、`metrics_json`、`source_research_run_id` 和 `source_experiment_id`。候选策略状态包括 `active`、`watching`、`rejected`、`archived`。
+
+### 为什么需要复检
+
+历史研究结果会随着新增行情、数据源修正、市场环境变化和交易成本假设变化而衰减。V3.4 通过复检比较 baseline 表现和 latest 表现，判断策略是否仍值得继续研究。
+
+### 复检模式
+
+- `forward_only`：只测试候选产生之后的新数据。该模式更接近新增样本验证，但新数据不足时结论可能不稳定。
+- `recent_window`：只测试最近 N 个月，适合观察策略近期是否衰减。
+- `full_retest`：用当前完整数据重新测试。该模式是重新测试，不等同于真实未来验证。
+
+### 生命周期建议
+
+系统输出 `keep_active`、`downgrade_to_watching`、`reject`、`archive`、`needs_more_data`、`continue_monitoring`。系统默认只给建议，不自动修改候选状态。只有用户点击“应用建议到候选状态”后，才会更新 candidate status，并写入 `candidate_lifecycle_events`。
+
+### 数据记录
+
+V3.4 新增表：
+
+- `candidate_revalidation_runs`：保存每次复检的 baseline、latest、comparison、decision 和建议。
+- `candidate_metric_snapshots`：保存每次复检后的指标快照。
+- `candidate_lifecycle_events`：保存 created、revalidated、status_changed、note_updated、archived、rejected 等生命周期事件。
+
+所有表使用 `CREATE TABLE IF NOT EXISTS` 自动初始化，不破坏旧数据。删除复检记录不会删除候选策略；候选策略默认不做物理删除，建议通过 archived 管理生命周期。
+
+### 报告与导出
+
+候选复检报告导出到 `reports/candidates/`，支持 Markdown 复检报告、复检历史 CSV、候选策略库 CSV 和生命周期日志 CSV。CSV 使用 `utf-8-sig` 编码。若包含 A 股代码字段，会保持 6 位字符串并保留文本安全列。
+
+### 风险提示
+
+- 候选复检基于历史数据，不代表未来收益。
+- forward_only 数据不足时结论可能不稳定。
+- full_retest 是当前数据上的重新测试，不等同于真实未来验证。
+- 生命周期建议只是辅助研究，不是交易建议。
+- 系统默认不自动修改候选状态。
+- 候选策略不是买入清单。
+- 本工具不构成投资建议。
+- 本工具不支持自动交易。
