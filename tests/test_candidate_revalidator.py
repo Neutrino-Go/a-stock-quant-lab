@@ -137,9 +137,36 @@ def test_recent_window_date_range_uses_recent_months(tmp_path):
     assert str(stability.calls[0]["end_date"]).startswith("2026-06-01")
 
 
-def test_full_retest_mode_runs_with_user_dates(tmp_path):
+def test_full_retest_uses_source_research_run_period_by_default(tmp_path):
     research_store, candidate_store = _stores(tmp_path)
-    candidate_id = _candidate(research_store)
+    research_run_id = research_store.create_research_run(
+        name="Source research",
+        strategy_name="trend_strength_strategy",
+        start_date="2020-01-01",
+        end_date="2024-12-31",
+        status="completed",
+    )
+    candidate_id = _candidate(research_store, source_research_run_id=research_run_id)
+    stability = FakeStabilityService()
+
+    _revalidator(research_store, candidate_store, stability=stability, latest="2026-06-01").run_revalidation(
+        CandidateRevalidationConfig(candidate_id=candidate_id, mode="full_retest")
+    )
+
+    assert stability.calls[0]["start_date"] == "2020-01-01"
+    assert stability.calls[0]["end_date"] == "2024-12-31"
+
+
+def test_full_retest_user_dates_override_source_period(tmp_path):
+    research_store, candidate_store = _stores(tmp_path)
+    research_run_id = research_store.create_research_run(
+        name="Source research",
+        strategy_name="trend_strength_strategy",
+        start_date="2019-01-01",
+        end_date="2024-12-31",
+        status="completed",
+    )
+    candidate_id = _candidate(research_store, source_research_run_id=research_run_id)
     stability = FakeStabilityService()
 
     result = _revalidator(research_store, candidate_store, stability=stability).run_revalidation(
@@ -154,6 +181,42 @@ def test_full_retest_mode_runs_with_user_dates(tmp_path):
     assert result.status == "completed"
     assert stability.calls[0]["start_date"] == "2020-01-01"
     assert stability.calls[0]["end_date"] == "2024-12-31"
+
+
+def test_full_retest_source_end_date_is_clipped_to_latest_date(tmp_path):
+    research_store, candidate_store = _stores(tmp_path)
+    research_run_id = research_store.create_research_run(
+        name="Source research",
+        strategy_name="trend_strength_strategy",
+        start_date="2020-01-01",
+        end_date="2026-12-31",
+        status="completed",
+    )
+    candidate_id = _candidate(research_store, source_research_run_id=research_run_id)
+    stability = FakeStabilityService()
+
+    _revalidator(research_store, candidate_store, stability=stability, latest="2026-06-01").run_revalidation(
+        CandidateRevalidationConfig(candidate_id=candidate_id, mode="full_retest")
+    )
+
+    assert stability.calls[0]["start_date"] == "2020-01-01"
+    assert stability.calls[0]["end_date"] == "2026-06-01"
+
+
+def test_full_retest_missing_source_period_records_warning(tmp_path):
+    research_store, candidate_store = _stores(tmp_path)
+    candidate_id = _candidate(research_store)
+    with candidate_store._connect() as conn:
+        conn.execute("UPDATE strategy_candidates SET created_at = ? WHERE id = ?", ("2026-07-01T00:00:00+00:00", candidate_id))
+
+    result = _revalidator(research_store, candidate_store, latest="2026-06-01").run_revalidation(
+        CandidateRevalidationConfig(candidate_id=candidate_id, mode="full_retest")
+    )
+    run = candidate_store.get_revalidation_run(result.revalidation_id)
+
+    assert result.recommended_action == "needs_more_data"
+    assert "full_retest source period unavailable" in result.decision["warnings"][0]
+    assert "fallback to candidate.created_at" in run["config_json"]["resolved_review_window"]["warnings"][0]
 
 
 def test_candidate_revalidation_can_be_saved_as_experiment(tmp_path):
