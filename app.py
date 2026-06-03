@@ -18,6 +18,7 @@ from candidate.candidate_revalidator import CandidateRevalidator
 from candidate.candidate_store import CandidateStore
 from candidate.candidate_ui_helpers import (
     action_to_candidate_status,
+    candidate_option_label,
     format_revalidation_mode,
     revalidation_summary_metrics,
     run_batch_revalidation,
@@ -1757,7 +1758,7 @@ def candidate_revalidation_page() -> None:
     with tabs[2]:
         candidate_batch_revalidation_tab(research, store)
     with tabs[3]:
-        candidate_history_tab(store)
+        candidate_history_tab(research, store)
     with tabs[4]:
         candidate_lifecycle_tab(research, store)
 
@@ -1826,6 +1827,8 @@ def candidate_single_revalidation_tab(research: ResearchStore, store: CandidateS
     col1, col2, col3 = st.columns(3)
     with col1:
         mode = st.selectbox("复检模式", ["forward_only", "recent_window", "full_retest"], format_func=format_revalidation_mode, key="candidate_single_mode")
+        if mode == "full_retest":
+            st.caption("full_retest 默认使用来源研究区间；找不到来源区间时请手动填写复检日期。")
     with col2:
         recent_months = st.number_input("recent_months", min_value=1, max_value=60, value=6, key="candidate_single_recent_months")
     with col3:
@@ -1949,7 +1952,14 @@ def candidate_batch_revalidation_tab(research: ResearchStore, store: CandidateSt
         st.dataframe(pd.DataFrame(st.session_state["candidate_batch_results"]), use_container_width=True)
 
 
-def candidate_history_tab(store: CandidateStore) -> None:
+def candidate_history_tab(research: ResearchStore, store: CandidateStore) -> None:
+    candidates = research.list_strategy_candidates(status="all")
+    candidate_id = None
+    if not candidates.empty:
+        labels = {"all": None}
+        labels.update({candidate_option_label(row): row["id"] for _, row in candidates.iterrows()})
+        selected_candidate = st.selectbox("candidate", list(labels), key="history_candidate")
+        candidate_id = labels[selected_candidate]
     col1, col2, col3 = st.columns(3)
     with col1:
         strategy_name = st.selectbox("策略名称", ["all"] + list(STRATEGY_OPTIONS.values()), format_func=lambda value: "all" if value == "all" else display_strategy_name(value), key="history_strategy")
@@ -1958,7 +1968,20 @@ def candidate_history_tab(store: CandidateStore) -> None:
     with col3:
         action = st.selectbox("recommended_action", ["all", "keep_active", "downgrade_to_watching", "reject", "archive", "needs_more_data", "continue_monitoring"], key="history_action")
     status = st.selectbox("状态", ["all", "completed", "failed", "draft"], key="history_status")
-    history = store.list_revalidation_runs(strategy_name=strategy_name, mode=mode, recommended_action=action, status=status)
+    date_cols = st.columns(2)
+    with date_cols[0]:
+        created_start = st.date_input("created_at 起始日期", value=None, key="history_created_start")
+    with date_cols[1]:
+        created_end = st.date_input("created_at 结束日期", value=None, key="history_created_end")
+    history = store.list_revalidation_runs(
+        candidate_id=candidate_id,
+        strategy_name=strategy_name,
+        mode=mode,
+        recommended_action=action,
+        status=status,
+        created_start=str(created_start) if created_start else None,
+        created_end=str(created_end) if created_end else None,
+    )
     if history.empty:
         st.info("当前暂无复检历史。")
         return
@@ -1986,7 +2009,17 @@ def candidate_lifecycle_tab(research: ResearchStore, store: CandidateStore) -> N
     candidates = research.list_strategy_candidates()
     candidate_id = select_candidate_id(candidates, "lifecycle_candidate_select") if not candidates.empty else None
     event_type = st.selectbox("event_type", ["all", "created", "revalidated", "status_changed", "note_updated", "archived", "rejected"], key="lifecycle_event_type")
-    events = store.list_lifecycle_events(candidate_id=candidate_id, event_type=event_type)
+    date_cols = st.columns(2)
+    with date_cols[0]:
+        created_start = st.date_input("created_at 起始日期", value=None, key="lifecycle_created_start")
+    with date_cols[1]:
+        created_end = st.date_input("created_at 结束日期", value=None, key="lifecycle_created_end")
+    events = store.list_lifecycle_events(
+        candidate_id=candidate_id,
+        event_type=event_type,
+        created_start=str(created_start) if created_start else None,
+        created_end=str(created_end) if created_end else None,
+    )
     if events.empty:
         st.info("当前暂无生命周期日志。")
     else:

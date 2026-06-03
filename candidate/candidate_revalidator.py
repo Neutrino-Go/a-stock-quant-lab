@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -42,12 +43,14 @@ class CandidateRevalidator:
         if not params:
             return self._failed_result(config, candidate, baseline, "Candidate params_json is empty; revalidation cannot run.")
 
-        start_date, end_date = determine_review_window(candidate, config, self.latest_date_loader())
+        window = self._resolve_review_window(candidate, config, self.latest_date_loader())
+        start_date, end_date = window.start_date, window.end_date
         if start_date is None or end_date is None or pd.to_datetime(start_date) >= pd.to_datetime(end_date):
             latest = {"total_trades": 0, "net_CAGR": None, "max_drawdown": None, "overfit_risk": "UNKNOWN"}
             comparison = build_candidate_comparison(baseline, latest).to_dict()
             decision = evaluate_candidate_lifecycle(baseline, latest, comparison, config.decision_thresholds)
-            run_id = self._save_run(config, candidate, baseline, latest, comparison, decision, start_date, end_date, status="completed")
+            _attach_window_warnings(decision, window, invalid_period=True)
+            run_id = self._save_run(config, candidate, baseline, latest, comparison, decision, start_date, end_date, status="completed", window=window)
             self.candidate_store.create_lifecycle_event(config.candidate_id, "revalidated", candidate.get("status"), candidate.get("status"), decision["action_reason"], {"revalidation_id": run_id})
             return CandidateRevalidationResult(
                 revalidation_id=run_id,
@@ -80,6 +83,7 @@ class CandidateRevalidator:
         comparison_obj = build_candidate_comparison(baseline, latest)
         comparison = comparison_obj.to_dict()
         decision = evaluate_candidate_lifecycle(baseline, latest, comparison, config.decision_thresholds)
+        _attach_window_warnings(decision, window)
         run_id = self._save_run(
             config,
             candidate,
@@ -90,6 +94,7 @@ class CandidateRevalidator:
             start_date,
             end_date,
             status="completed",
+            window=window,
         )
         generated_experiment_id = None
         if config.save_as_experiment:
@@ -142,6 +147,38 @@ class CandidateRevalidator:
             generated_experiment_id=generated_experiment_id,
         )
 
+    def _resolve_review_window(
+        self,
+        candidate: dict[str, Any],
+        config: CandidateRevalidationConfig,
+        latest_date: str | pd.Timestamp | None,
+    ) -> "ReviewWindow":
+        source_period = self._resolve_source_period(candidate) if config.mode == "full_retest" else None
+        return determine_review_window(candidate, config, latest_date, source_period=source_period)
+
+    def _resolve_source_period(self, candidate: dict[str, Any]) -> tuple[str | None, str | None, str] | None:
+        research_run_id = candidate.get("source_research_run_id")
+        if research_run_id:
+            detail = self.research_store.get_research_run_detail(str(research_run_id))
+            run = dict(detail.get("run") or {})
+            period = _period_from_mapping(run)
+            if period:
+                return period[0], period[1], "source_research_run"
+
+        experiment_id = candidate.get("source_experiment_id")
+        if experiment_id and hasattr(self.experiment_service, "build_experiment_detail"):
+            detail = self.experiment_service.build_experiment_detail(str(experiment_id))
+            run = dict(detail.get("run") or {})
+            period = _period_from_mapping(run)
+            if period:
+                return period[0], period[1], "source_experiment"
+
+        for key in ["config_json", "metrics_json", "scorecard_json"]:
+            period = _period_from_mapping(candidate.get(key))
+            if period:
+                return period[0], period[1], f"candidate.{key}"
+        return None
+
     def _failed_result(
         self,
         config: CandidateRevalidationConfig,
@@ -192,7 +229,11 @@ class CandidateRevalidator:
         end_date: str | None,
         status: str,
         generated_experiment_id: str | None = None,
+        window: "ReviewWindow | None" = None,
     ) -> str:
+        config_payload = config.to_dict()
+        if window is not None:
+            config_payload["resolved_review_window"] = window.to_dict()
         return self.candidate_store.create_revalidation_run(
             candidate_id=config.candidate_id,
             strategy_name=candidate.get("strategy_name", ""),
@@ -212,37 +253,71 @@ class CandidateRevalidator:
             source_research_run_id=candidate.get("source_research_run_id"),
             source_experiment_id=candidate.get("source_experiment_id"),
             generated_experiment_id=generated_experiment_id,
-            config=config.to_dict(),
+            config=config_payload,
             notes=config.notes,
             tags=config.tags,
             git_commit=self.git_commit_loader(),
         )
 
 
+@dataclass(frozen=True)
+class ReviewWindow:
+    start_date: str | None
+    end_date: str | None
+    source: str
+    warnings: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def determine_review_window(
     candidate: dict[str, Any],
     config: CandidateRevalidationConfig,
     latest_date: str | pd.Timestamp | None,
-) -> tuple[str | None, str | None]:
-    latest = pd.to_datetime(config.review_end_date or latest_date, errors="coerce")
+    source_period: tuple[str | None, str | None, str] | None = None,
+) -> ReviewWindow:
+    warnings: list[str] = []
+    latest = pd.to_datetime(latest_date, errors="coerce")
     if pd.isna(latest):
-        return None, None
+        return ReviewWindow(None, None, "latest_date_unavailable", ["latest local data date is unavailable"])
+
+    user_end = pd.to_datetime(config.review_end_date, errors="coerce") if config.review_end_date else None
+    end = user_end if user_end is not None and not pd.isna(user_end) else latest
+    source = "user" if user_end is not None and not pd.isna(user_end) else "latest_date"
+    if end > latest:
+        end = latest
+        warnings.append("review_end_date clipped to latest available local data date")
+
     if config.mode == "recent_window":
-        start = pd.to_datetime(config.review_start_date, errors="coerce") if config.review_start_date else latest - pd.DateOffset(months=int(config.recent_months or 6))
-        return start.date().isoformat(), latest.date().isoformat()
+        start = pd.to_datetime(config.review_start_date, errors="coerce") if config.review_start_date else end - pd.DateOffset(months=int(config.recent_months or 6))
+        return ReviewWindow(_date_iso(start), _date_iso(end), "user" if config.review_start_date or config.review_end_date else "recent_window", warnings)
+
     if config.mode == "full_retest":
-        start = pd.to_datetime(config.review_start_date or candidate.get("created_at"), errors="coerce")
+        source_start = source_end = source_name = None
+        if source_period:
+            source_start, source_end, source_name = source_period
+        start = pd.to_datetime(config.review_start_date, errors="coerce") if config.review_start_date else pd.to_datetime(source_start, errors="coerce")
+        if config.review_end_date is None and source_end:
+            end = pd.to_datetime(source_end, errors="coerce")
+            if end > latest:
+                end = latest
+                warnings.append("source end_date clipped to latest available local data date")
         if pd.isna(start):
-            return None, latest.date().isoformat()
-        return start.date().isoformat(), latest.date().isoformat()
+            start = pd.to_datetime(candidate.get("created_at"), errors="coerce")
+            warnings.append("full_retest source period unavailable; fallback to candidate.created_at")
+            source_name = "fallback_candidate_created_at"
+        resolved_source = "user" if config.review_start_date or config.review_end_date else source_name or source
+        return ReviewWindow(_date_iso(start), _date_iso(end), resolved_source, warnings)
+
     if config.mode == "forward_only":
         created = pd.to_datetime(candidate.get("created_at"), errors="coerce")
         start = pd.to_datetime(config.review_start_date, errors="coerce") if config.review_start_date else created
         if pd.isna(start):
-            return None, latest.date().isoformat()
+            return ReviewWindow(None, _date_iso(end), "forward_only", warnings)
         if not pd.isna(created) and start < created:
             start = created
-        return start.date().isoformat(), latest.date().isoformat()
+        return ReviewWindow(_date_iso(start), _date_iso(end), "forward_only", warnings)
     raise ValueError(f"Unknown revalidation mode: {config.mode}")
 
 
@@ -282,6 +357,50 @@ def current_git_commit(project_root: str | Path | None = None) -> str:
     except (OSError, subprocess.CalledProcessError):
         return ""
     return completed.stdout.strip()
+
+
+def _attach_window_warnings(decision: dict[str, Any], window: ReviewWindow, invalid_period: bool = False) -> None:
+    warnings = list(window.warnings)
+    if invalid_period:
+        warnings.append("review window is empty or invalid; start_date must be before end_date")
+        reason = "Review window is empty or invalid; start_date must be before end_date."
+        if window.warnings:
+            reason = f"{reason} {window.warnings[0]}"
+        decision["action_reason"] = reason
+        flags = list(decision.get("flags", []) or [])
+        if "invalid_review_window" not in flags:
+            flags.append("invalid_review_window")
+        decision["flags"] = flags
+    if warnings:
+        decision["warnings"] = warnings
+
+
+def _period_from_mapping(value: Any) -> tuple[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    key_pairs = [
+        ("start_date", "end_date"),
+        ("research_start_date", "research_end_date"),
+        ("data_start_date", "data_end_date"),
+        ("review_start_date", "review_end_date"),
+    ]
+    for start_key, end_key in key_pairs:
+        start = _date_iso(pd.to_datetime(value.get(start_key), errors="coerce"))
+        end = _date_iso(pd.to_datetime(value.get(end_key), errors="coerce"))
+        if start and end:
+            return start, end
+    for item in value.values():
+        nested = _period_from_mapping(item)
+        if nested:
+            return nested
+    return None
+
+
+def _date_iso(value: Any) -> str | None:
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        return None
+    return timestamp.date().isoformat()
 
 
 def _baseline_metrics(candidate: dict[str, Any]) -> dict[str, Any]:
