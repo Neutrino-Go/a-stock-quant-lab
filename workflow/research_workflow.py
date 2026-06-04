@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from data.database import get_stock_daily
+from data_quality.data_health_service import DataHealthService
 from execution.cost_model import TradingCostConfig
 from factor.factor_engine import compute_factors
 from research.experiment_service import ExperimentService
@@ -37,6 +38,8 @@ class StrategyResearchWorkflow:
         self.git_commit_loader = git_commit_loader or current_git_commit
 
     def run(self, config: ResearchConfig) -> ResearchRunResult:
+        config_payload = config.to_dict()
+        config_payload["data_snapshot_info"] = _data_snapshot_info()
         research_run_id = self.store.create_research_run(
             name=config.name or f"{config.strategy_name} {config.research_template} research",
             strategy_name=config.strategy_name,
@@ -44,7 +47,7 @@ class StrategyResearchWorkflow:
             start_date=config.start_date,
             end_date=config.end_date,
             research_template=config.research_template,
-            config=config.to_dict(),
+            config=config_payload,
             notes=config.notes,
             tags=config.tags,
             git_commit=self.git_commit_loader(),
@@ -128,6 +131,7 @@ class StrategyResearchWorkflow:
             "trade_days": int(dates.nunique()),
             "rows": int(len(factor_data)),
             "stock_count": int(factor_data["code"].nunique()) if "code" in factor_data.columns else 0,
+            "data_snapshot_info": _data_snapshot_info(price_df=factor_data),
         }
         steps.append(self._save_step(research_run_id, "data_check", "completed", "Data check completed.", result))
         return factor_data
@@ -409,6 +413,13 @@ def current_git_commit(project_root: str | Path | None = None) -> str:
     except (OSError, subprocess.CalledProcessError):
         return ""
     return completed.stdout.strip()
+
+
+def _data_snapshot_info(price_df: pd.DataFrame | None = None) -> dict[str, Any]:
+    try:
+        return DataHealthService().build_data_snapshot_info(price_df=price_df)
+    except Exception as exc:
+        return {"universe_warnings": [f"data quality snapshot unavailable: {exc}"]}
 
 
 def config_to_dict(value: Any) -> Any:

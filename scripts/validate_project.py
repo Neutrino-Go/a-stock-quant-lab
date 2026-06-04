@@ -23,16 +23,18 @@ EXCLUDED_DIR_NAMES = {
 }
 EXCLUDED_RELATIVE_DIRS = {
     Path("reports") / "experiments",
+    Path("reports") / "data_quality",
 }
 COMPILE_EXCLUDE_REGEX = re.compile(
     r"(^|[\\/])("
     + "|".join(re.escape(name) for name in sorted(EXCLUDED_DIR_NAMES))
-    + r")([\\/]|$)|(^|[\\/])reports[\\/]experiments([\\/]|$)"
+    + r")([\\/]|$)|(^|[\\/])reports[\\/](experiments|data_quality)([\\/]|$)"
 )
 
 REQUIRED_DIRS = [
     "backtest",
     "data",
+    "data_quality",
     "execution",
     "factor",
     "market",
@@ -44,6 +46,7 @@ REQUIRED_DIRS = [
     "reports/experiments",
     "reports/research",
     "reports/candidates",
+    "reports/data_quality",
     "stability",
     "strategy",
     "candidate",
@@ -59,6 +62,15 @@ REQUIRED_FILES = [
     "config.py",
     "backtest/backtest_engine.py",
     "data/database.py",
+    "data_quality/models.py",
+    "data_quality/calendar.py",
+    "data_quality/validators.py",
+    "data_quality/universe.py",
+    "data_quality/adjustment.py",
+    "data_quality/audit.py",
+    "data_quality/data_health_service.py",
+    "data_quality/report_exporter.py",
+    "data_quality/ui_helpers.py",
     "execution/cost_model.py",
     "execution/slippage_model.py",
     "execution/order_model.py",
@@ -135,6 +147,13 @@ REQUIRED_FILES = [
     "tests/test_candidate_revalidator.py",
     "tests/test_candidate_report.py",
     "tests/test_candidate_ui_helpers.py",
+    "tests/test_data_quality_calendar.py",
+    "tests/test_data_quality_validators.py",
+    "tests/test_adjustment.py",
+    "tests/test_universe_builder.py",
+    "tests/test_data_quality_audit.py",
+    "tests/test_data_health_service.py",
+    "tests/test_data_quality_report.py",
     "pytest.ini",
 ]
 
@@ -142,7 +161,7 @@ REQUIRED_FILES = [
 def main() -> int:
     print("A-Stock Quant Lab local validation")
     print(f"Project root: {PROJECT_ROOT}")
-    print(f"Excluded directories: {', '.join(sorted(EXCLUDED_DIR_NAMES | {'reports/experiments'}))}")
+    print(f"Excluded directories: {', '.join(sorted(EXCLUDED_DIR_NAMES | {'reports/experiments', 'reports/data_quality'}))}")
 
     checks = [
         ("directories", check_directories),

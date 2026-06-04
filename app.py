@@ -25,6 +25,12 @@ from candidate.candidate_ui_helpers import (
 )
 from data.data_updater import DataUpdateService
 from data.database import get_database_status, get_stock_daily, get_stock_list
+from data_quality.audit import DataQualityAuditor
+from data_quality.data_health_service import DataHealthService
+from data_quality.report_exporter import export_data_quality_issues_csv, export_data_quality_markdown_report
+from data_quality.ui_helpers import file_info as data_quality_file_info
+from data_quality.ui_helpers import parse_code_list
+from data_quality.universe import StockUniverseBuilder
 from execution.cost_model import TradingCostConfig
 from factor.factor_engine import compute_factors
 from market.index_data import get_index_prices, update_hs300_index
@@ -134,6 +140,21 @@ def candidate_revalidator_service() -> CandidateRevalidator:
         stability_service=stability_service(),
         experiment_service=experiment_service(),
     )
+
+
+@st.cache_resource
+def data_health_service() -> DataHealthService:
+    return DataHealthService()
+
+
+@st.cache_resource
+def data_quality_auditor() -> DataQualityAuditor:
+    return DataQualityAuditor()
+
+
+@st.cache_resource
+def stock_universe_builder() -> StockUniverseBuilder:
+    return StockUniverseBuilder()
 
 
 def clear_data_cache() -> None:
@@ -282,6 +303,186 @@ def render_portfolio_metrics(metrics: dict[str, object], initial_cash: float) ->
     columns = st.columns(4)
     for idx, (label, value) in enumerate(items):
         columns[idx % 4].metric(label, value)
+
+
+def data_quality_page() -> None:
+    st.header("数据质量")
+    st.caption("数据质量检查用于识别缺失、重复、复权混用和股票池偏差。检查通过不代表策略未来有效。")
+    tabs = st.tabs(["数据健康概览", "运行数据审计", "问题明细", "股票池构建", "数据质量报告"])
+    auditor = data_quality_auditor()
+    health = data_health_service()
+
+    with tabs[0]:
+        summary = health.get_database_health_summary()
+        columns = st.columns(5)
+        columns[0].metric("股票数", summary.get("stock_count", 0))
+        columns[1].metric("行情记录", summary.get("daily_price_count", 0))
+        columns[2].metric("最新交易日", summary.get("latest_trading_day") or "-")
+        columns[3].metric("CRITICAL", summary.get("critical_issue_count", 0))
+        columns[4].metric("WARNING", summary.get("warning_issue_count", 0))
+        if int(summary.get("critical_issue_count") or 0) > 0:
+            st.warning("当前数据存在严重问题，回测结果可能不可靠。")
+        st.write("数据区间", summary.get("start_date") or "-", "至", summary.get("end_date") or "-")
+        st.write("当前主要 adjust_type", summary.get("adjust_type") or "unknown")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("issue_type 分布")
+            issue_summary = health.get_issue_summary_by_type()
+            if issue_summary.empty:
+                st.info("暂无数据质量问题记录。")
+            else:
+                st.dataframe(issue_summary, use_container_width=True)
+        with col2:
+            st.subheader("adjust_type 分布")
+            st.dataframe(health.get_adjust_type_summary(), use_container_width=True)
+
+        st.subheader("stale stocks")
+        stale = health.get_stale_stocks(max_lag_days=7)
+        if stale.empty:
+            st.info("暂无 stale 股票。")
+        else:
+            st.dataframe(stale.head(200), use_container_width=True)
+
+        st.subheader("coverage by code")
+        coverage = health.get_data_coverage_by_code()
+        if coverage.empty:
+            st.info("暂无行情覆盖数据。")
+        else:
+            st.dataframe(coverage.head(200), use_container_width=True)
+
+    with tabs[1]:
+        st.info("全市场多年审计可能耗时较久，建议先小范围测试。")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            scope = st.selectbox("scope", ["daily_prices", "single_stock", "stock_list", "universe", "index_prices", "all"], index=0)
+            start = st.date_input("start_date", value=date(2020, 1, 1), key="dq_audit_start")
+        with col2:
+            adjust_type = st.selectbox("adjust_type", ["qfq", "raw", "hfq", "unknown"], index=0)
+            end = st.date_input("end_date", value=date.today(), key="dq_audit_end")
+        with col3:
+            max_codes = st.number_input("最大检查股票数", min_value=1, max_value=5000, value=50, step=10)
+            codes_text = st.text_area("codes", placeholder="000001, 000002", key="dq_audit_codes")
+        check_calendar = st.checkbox("检查交易日缺口", value=True)
+        check_bias = st.checkbox("检查幸存者偏差", value=True)
+        check_adjustment = st.checkbox("检查复权一致性", value=True)
+        if st.button("运行审计"):
+            with st.spinner("正在运行数据审计"):
+                result = auditor.run_audit(
+                    scope=scope,
+                    start_date=start.isoformat(),
+                    end_date=end.isoformat(),
+                    codes=parse_code_list(codes_text),
+                    adjust_type=adjust_type,
+                    check_calendar_gaps=check_calendar,
+                    check_survivorship_bias=check_bias,
+                    check_adjustment=check_adjustment,
+                    max_codes=int(max_codes),
+                )
+            st.success(f"审计完成：{result.run_id} / {result.status}")
+            st.json(result.summary)
+            if result.issues:
+                st.dataframe(pd.DataFrame([issue.to_record(result.run_id) for issue in result.issues]), use_container_width=True)
+            else:
+                st.info("本次审计未发现问题。")
+
+    with tabs[2]:
+        runs = auditor.list_runs()
+        run_options = [""] + (runs["id"].tolist() if not runs.empty and "id" in runs else [])
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            run_id = st.selectbox("run_id", run_options, format_func=lambda value: value or "全部", key="dq_issue_run")
+            severity = st.selectbox("severity", ["all", "CRITICAL", "ERROR", "WARNING", "INFO"], key="dq_issue_severity")
+        with col2:
+            issue_types = ["all"] + sorted(auditor.list_issues()["issue_type"].dropna().unique().tolist()) if not auditor.list_issues().empty else ["all"]
+            issue_type = st.selectbox("issue_type", issue_types, key="dq_issue_type")
+            code = st.text_input("code", key="dq_issue_code")
+        with col3:
+            keyword = st.text_input("keyword", key="dq_issue_keyword")
+            issue_start = st.date_input("date start", value=None, key="dq_issue_start")
+            issue_end = st.date_input("date end", value=None, key="dq_issue_end")
+        issues = auditor.list_issues(
+            run_id=run_id or None,
+            severity=severity,
+            issue_type=issue_type,
+            code=code or None,
+            start_date=issue_start.isoformat() if issue_start else None,
+            end_date=issue_end.isoformat() if issue_end else None,
+            keyword=keyword or None,
+        )
+        if issues.empty:
+            st.info("没有找到符合条件的问题记录。")
+        else:
+            st.dataframe(issues, use_container_width=True)
+        if st.button("导出当前 issues CSV"):
+            path = export_data_quality_issues_csv(issues, Path("reports/data_quality") / "data_quality_issues_export.csv")
+            info = data_quality_file_info(path)
+            st.success(f"已导出：{info['path']} ({info['size']} bytes)")
+            st.download_button("下载 issues CSV", data=Path(path).read_bytes(), file_name=Path(path).name, mime="text/csv")
+
+    with tabs[3]:
+        builder = stock_universe_builder()
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            as_of_date = st.date_input("as_of_date", value=date.today(), key="universe_as_of")
+            universe_name = st.text_input("universe_name", value="default")
+            min_list_days = st.number_input("min_list_days", min_value=0, max_value=5000, value=250)
+        with col2:
+            exclude_st = st.checkbox("exclude_st", value=True)
+            exclude_suspended = st.checkbox("exclude_suspended", value=True)
+            exclude_delisted = st.checkbox("exclude_delisted", value=True)
+        with col3:
+            min_amount = st.number_input("min_amount", min_value=0.0, value=0.0, step=10_000_000.0)
+            min_price = st.number_input("min_price", min_value=0.0, value=0.0)
+            max_price = st.number_input("max_price", min_value=0.0, value=0.0)
+        if st.button("构建股票池"):
+            result = builder.build_universe(
+                as_of_date=as_of_date.isoformat(),
+                universe_name=universe_name,
+                min_list_days=int(min_list_days),
+                exclude_st=exclude_st,
+                exclude_suspended=exclude_suspended,
+                exclude_delisted=exclude_delisted,
+                min_amount=float(min_amount) if min_amount else None,
+                min_price=float(min_price) if min_price else None,
+                max_price=float(max_price) if max_price else None,
+            )
+            st.session_state["latest_universe_result"] = result.to_dict()
+            st.metric("stock_count", result.stock_count)
+            for warning in result.warnings:
+                st.warning(warning)
+            st.dataframe(pd.DataFrame({"code": result.codes}), use_container_width=True)
+        if "latest_universe_result" in st.session_state:
+            latest = st.session_state["latest_universe_result"]
+            if st.button("保存 snapshot"):
+                saved_id = builder.save_snapshot(
+                    builder.build_universe(
+                        as_of_date=latest["as_of_date"],
+                        universe_name=latest["universe_name"],
+                        min_list_days=latest["config"].get("min_list_days", 250),
+                        exclude_st=latest["config"].get("exclude_st", True),
+                        exclude_suspended=latest["config"].get("exclude_suspended", True),
+                        exclude_delisted=latest["config"].get("exclude_delisted", True),
+                    )
+                )
+                st.success(f"已保存 snapshot：{saved_id}")
+
+    with tabs[4]:
+        runs = auditor.list_runs()
+        if runs.empty:
+            st.info("暂无 data_quality_run，请先运行一次审计。")
+        else:
+            run_id = st.selectbox("选择 data_quality_run", runs["id"].tolist(), key="dq_report_run")
+            if st.button("导出 Markdown 报告"):
+                path = export_data_quality_markdown_report(auditor, run_id)
+                info = data_quality_file_info(path)
+                st.success(f"已导出：{info['path']} ({info['size']} bytes)")
+                st.download_button("下载 Markdown", data=Path(path).read_bytes(), file_name=Path(path).name, mime="text/markdown")
+            if st.button("导出 issues CSV"):
+                path = export_data_quality_issues_csv(auditor.list_issues(run_id=run_id), Path("reports/data_quality") / f"data_quality_{run_id}_issues.csv")
+                info = data_quality_file_info(path)
+                st.success(f"已导出：{info['path']} ({info['size']} bytes)")
+                st.download_button("下载 CSV", data=Path(path).read_bytes(), file_name=Path(path).name, mime="text/csv")
 
 
 def data_center() -> None:
@@ -2056,6 +2257,7 @@ def experiment_center_page() -> None:
 
 
 PAGES = {
+    "数据质量": data_quality_page,
     "数据中心": data_center,
     "策略实验室": strategy_lab,
     "回测中心": backtest_center,

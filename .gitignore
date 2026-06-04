@@ -20,4 +20,8 @@ reports/candidates/*.csv
 reports/candidates/*.json
 reports/candidates/*.md
 reports/candidates/*.png
+reports/data_quality/*.csv
+reports/data_quality/*.json
+reports/data_quality/*.md
+reports/data_quality/*.png
 review_packages/
