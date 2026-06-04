@@ -72,7 +72,12 @@ class TradingCalendarService:
         date = date_iso(value)
         with connect(self.db_path) as conn:
             row = conn.execute("SELECT is_trading_day FROM trading_calendar WHERE market = ? AND date = ?", (self.market, date)).fetchone()
-        return bool(row["is_trading_day"]) if row else False
+        if row:
+            return bool(row["is_trading_day"])
+        if not self._has_saved_calendar_rows():
+            inferred = self.get_trading_calendar(date, date)
+            return bool(not inferred.empty and inferred["is_trading_day"].any())
+        return False
 
     def get_previous_trading_day(self, value: str) -> str | None:
         date = date_iso(value)
@@ -81,7 +86,11 @@ class TradingCalendarService:
                 "SELECT date FROM trading_calendar WHERE market = ? AND is_trading_day = 1 AND date < ? ORDER BY date DESC LIMIT 1",
                 (self.market, date),
             ).fetchone()
-        return row["date"] if row else None
+        if row:
+            return row["date"]
+        if not self._has_saved_calendar_rows():
+            return self._inferred_neighbor(date, previous=True)
+        return None
 
     def get_next_trading_day(self, value: str) -> str | None:
         date = date_iso(value)
@@ -90,7 +99,11 @@ class TradingCalendarService:
                 "SELECT date FROM trading_calendar WHERE market = ? AND is_trading_day = 1 AND date > ? ORDER BY date LIMIT 1",
                 (self.market, date),
             ).fetchone()
-        return row["date"] if row else None
+        if row:
+            return row["date"]
+        if not self._has_saved_calendar_rows():
+            return self._inferred_neighbor(date, previous=False)
+        return None
 
     def count_trading_days(self, start_date: str, end_date: str) -> int:
         frame = self.get_trading_calendar(start_date, end_date)
@@ -118,3 +131,26 @@ class TradingCalendarService:
         dates = pd.to_datetime(prices["date"], errors="coerce").dropna().drop_duplicates().sort_values()
         frame = pd.DataFrame({"date": dates, "is_trading_day": True, "market": self.market, "source": "inferred_from_prices", "created_at": now_iso()})
         return frame.reset_index(drop=True)
+
+    def _has_saved_calendar_rows(self) -> bool:
+        with connect(self.db_path) as conn:
+            value = conn.execute("SELECT COUNT(*) FROM trading_calendar WHERE market = ?", (self.market,)).fetchone()[0]
+        return int(value or 0) > 0
+
+    def _inferred_neighbor(self, date: str | None, previous: bool) -> str | None:
+        if date is None:
+            return None
+        center = pd.to_datetime(date, errors="coerce")
+        if pd.isna(center):
+            return None
+        start = (center - pd.DateOffset(years=5)).date().isoformat()
+        end = (center + pd.DateOffset(years=5)).date().isoformat()
+        calendar = self.get_trading_calendar(start, end)
+        if calendar.empty:
+            return None
+        dates = pd.to_datetime(calendar.loc[calendar["is_trading_day"], "date"], errors="coerce").dropna().sort_values()
+        if previous:
+            candidates = dates.loc[dates.lt(center)]
+            return candidates.iloc[-1].date().isoformat() if not candidates.empty else None
+        candidates = dates.loc[dates.gt(center)]
+        return candidates.iloc[0].date().isoformat() if not candidates.empty else None

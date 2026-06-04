@@ -89,9 +89,10 @@ class StockUniverseBuilder:
                 """
                 INSERT INTO stock_universe_snapshots(
                     id, snapshot_date, universe_name, as_of_date, config_json,
-                    stock_count, codes_json, warnings_json, created_at
+                    stock_count, codes_json, warnings_json, bias_flags_json,
+                    metadata_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snapshot_id,
@@ -102,10 +103,15 @@ class StockUniverseBuilder:
                     result.stock_count,
                     json_dumps(result.codes),
                     json_dumps(result.warnings),
+                    json_dumps(result.bias_flags),
+                    json_dumps(result.metadata),
                     now_iso(),
                 ),
             )
         return snapshot_id
+
+    def save_snapshot_from_dict(self, result: dict) -> str:
+        return self.save_snapshot(StockUniverseResult.from_dict(result))
 
     def list_snapshots(self) -> pd.DataFrame:
         with connect(self.db_path) as conn:
@@ -114,6 +120,10 @@ class StockUniverseBuilder:
             frame["codes_json"] = frame["codes_json"].map(lambda value: json_loads(value, []))
             frame["warnings_json"] = frame["warnings_json"].map(lambda value: json_loads(value, []))
             frame["config_json"] = frame["config_json"].map(lambda value: json_loads(value, {}))
+            if "bias_flags_json" in frame.columns:
+                frame["bias_flags_json"] = frame["bias_flags_json"].map(lambda value: json_loads(value, []))
+            if "metadata_json" in frame.columns:
+                frame["metadata_json"] = frame["metadata_json"].map(lambda value: json_loads(value, {}))
         return frame
 
     def _load_stock_list(self) -> pd.DataFrame:

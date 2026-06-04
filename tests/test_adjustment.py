@@ -40,4 +40,5 @@ def test_attach_adjust_type_normalizes_alias():
 def test_missing_adjust_type_column_warns_without_raise():
     issues = validate_adjust_type_consistency(pd.DataFrame({"close": [1.0]}), raise_on_error=False)
 
-    assert any(issue.issue_type == "adjust_type_mismatch" for issue in issues)
+    assert any(issue.issue_type == "adjust_type_missing_legacy" for issue in issues)
+    assert issues[0].details["actual_adjust_type"] == "unknown"

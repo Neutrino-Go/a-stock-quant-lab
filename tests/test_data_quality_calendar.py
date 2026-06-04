@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from data.database import get_engine, upsert_stock_daily
 from data_quality.calendar import TradingCalendarService
 
 
@@ -40,6 +41,32 @@ def test_empty_calendar_does_not_crash(tmp_path):
 
     assert service.get_previous_trading_day("2024-01-04") is None
     assert service.get_next_trading_day("2024-01-04") is None
+
+
+def test_previous_next_trading_day_can_fallback_to_price_dates(tmp_path):
+    db_path = tmp_path / "calendar.db"
+    upsert_stock_daily(
+        pd.DataFrame(
+            {
+                "code": ["000001", "000001"],
+                "name": ["A", "A"],
+                "date": ["2024-01-02", "2024-01-05"],
+                "open": [10, 10],
+                "high": [11, 11],
+                "low": [9, 9],
+                "close": [10, 10],
+                "volume": [1, 1],
+                "amount": [1, 1],
+                "turnover": [1, 1],
+            }
+        ),
+        engine=get_engine(db_path),
+    )
+    service = TradingCalendarService(db_path)
+
+    assert service.is_trading_day("2024-01-02") is True
+    assert service.get_previous_trading_day("2024-01-04") == "2024-01-02"
+    assert service.get_next_trading_day("2024-01-04") == "2024-01-05"
 
 
 def test_saved_calendar_respects_non_trading_day(tmp_path):

@@ -4,8 +4,8 @@ from typing import Any
 
 import pandas as pd
 
-from data_quality.adjustment import attach_adjust_type, validate_adjust_type_consistency
-from data_quality.models import DataQualityIssue, date_iso
+from data_quality.adjustment import validate_adjust_type_consistency
+from data_quality.models import AdjustmentConfig, DataQualityIssue, date_iso
 
 
 REQUIRED_DAILY_COLUMNS = ["code", "date", "open", "high", "low", "close", "volume", "amount", "turnover"]
@@ -22,8 +22,6 @@ class DataValidator:
             if df.empty:
                 return issues
             frame = df.copy()
-            if adjust_type and "adjust_type" not in frame.columns:
-                frame = attach_adjust_type(frame, adjust_type)
             missing = [column for column in REQUIRED_DAILY_COLUMNS if column not in frame.columns]
             for column in missing:
                 issues.append(DataQualityIssue("ERROR", "missing_required_field", code=code, field=column, message=f"Missing required field: {column}"))
@@ -36,7 +34,8 @@ class DataValidator:
             issues.extend(self._sorting_issues(frame))
             issues.extend(self._return_issues(frame))
             issues.extend(self._stale_issues(frame))
-            issues.extend(validate_adjust_type_consistency(frame, raise_on_error=False))
+            config = AdjustmentConfig(adjust_type=adjust_type or "unknown")
+            issues.extend(validate_adjust_type_consistency(frame, config=config, raise_on_error=False))
         except Exception as exc:
             issues.append(DataQualityIssue("CRITICAL", "validator_exception", code=code, message=str(exc)))
         return issues

@@ -41,7 +41,17 @@ def validate_adjust_type_consistency(
     if df.empty:
         return []
     if "adjust_type" not in df.columns:
-        issue = DataQualityIssue("WARNING", "adjust_type_mismatch", field="adjust_type", message="adjust_type is missing; treating legacy data as unknown")
+        issue = DataQualityIssue(
+            "WARNING",
+            "adjust_type_missing_legacy",
+            field="adjust_type",
+            message="price data does not contain adjust_type; selected adjust_type is treated as assumption only",
+            details={
+                "requested_adjust_type": config.adjust_type,
+                "actual_adjust_type": "unknown",
+                "assumed_adjust_type": config.adjust_type,
+            },
+        )
         if raise_on_error and not config.allow_mixed_adjust_type:
             raise ValueError(issue.message)
         return [issue]

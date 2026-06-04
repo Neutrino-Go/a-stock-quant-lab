@@ -84,7 +84,7 @@ class DataHealthService:
 
     def build_data_snapshot_info(
         self,
-        adjust_type: str = "qfq",
+        adjust_type: str | None = None,
         universe_config: dict[str, Any] | None = None,
         universe_warnings: list[str] | None = None,
         price_df: pd.DataFrame | None = None,
@@ -92,17 +92,25 @@ class DataHealthService:
     ) -> dict[str, Any]:
         summary = self.get_database_health_summary(price_df=price_df, stock_list=stock_list)
         latest_run = self.get_latest_data_quality_run()
+        actual_adjust_type = summary.get("adjust_type") or "unknown"
+        requested_adjust_type = adjust_type
+        warnings = list(universe_warnings or ([] if latest_run else ["no data_quality_run available"]))
+        if actual_adjust_type == "unknown":
+            warnings.append("legacy daily_price has no adjust_type; backtest adjust type is an assumption")
         snapshot = {
             "stock_count": summary["stock_count"],
             "daily_price_count": summary["daily_price_count"],
             "start_date": summary["start_date"],
             "end_date": summary["end_date"],
-            "adjust_type": adjust_type,
+            "adjust_type": actual_adjust_type,
+            "requested_adjust_type": requested_adjust_type,
+            "actual_adjust_type": actual_adjust_type,
+            "assumed_adjust_type": requested_adjust_type if actual_adjust_type == "unknown" and requested_adjust_type else None,
             "latest_quality_run_id": latest_run.get("id") if latest_run else None,
             "critical_issue_count": int(latest_run.get("critical_issue_count", 0)) if latest_run else 0,
             "warning_issue_count": int(latest_run.get("warning_issue_count", 0)) if latest_run else 0,
             "universe_config": universe_config or {},
-            "universe_warnings": universe_warnings or ([] if latest_run else ["no data_quality_run available"]),
+            "universe_warnings": warnings,
         }
         return snapshot
 

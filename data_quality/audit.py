@@ -9,9 +9,9 @@ import pandas as pd
 
 from config import DATABASE_PATH
 from data.database import get_engine, get_stock_daily
-from data_quality.adjustment import attach_adjust_type, validate_adjust_type_consistency
+from data_quality.adjustment import validate_adjust_type_consistency
 from data_quality.calendar import TradingCalendarService
-from data_quality.models import DataQualityIssue, DataQualityRunResult, connect, date_iso, json_dumps, json_loads, now_iso
+from data_quality.models import AdjustmentConfig, DataQualityIssue, DataQualityRunResult, StockUniverseResult, connect, date_iso, json_dumps, json_loads, now_iso
 from data_quality.universe import StockUniverseBuilder
 from data_quality.validators import DataValidator
 
@@ -39,7 +39,7 @@ class DataQualityAuditor:
         try:
             prices = price_df.copy() if isinstance(price_df, pd.DataFrame) else self._load_price_data(codes, start_date, end_date)
             if not prices.empty and "adjust_type" not in prices.columns:
-                prices = attach_adjust_type(prices, adjust_type)
+                prices = self._mark_legacy_adjust_type_assumption(prices, adjust_type)
             if codes and not prices.empty:
                 normalized_codes = {str(code).zfill(6) for code in codes}
                 prices = prices.loc[prices["code"].astype(str).str.zfill(6).isin(normalized_codes)]
@@ -47,18 +47,21 @@ class DataQualityAuditor:
                 allowed = prices["code"].astype(str).str.zfill(6).drop_duplicates().head(int(max_codes)).tolist()
                 prices = prices.loc[prices["code"].astype(str).str.zfill(6).isin(allowed)]
             issues = DataValidator().validate_daily_prices(prices, adjust_type=adjust_type)
+            issues.extend(self._scope_issues(scope))
             if check_calendar_gaps and not prices.empty:
                 issues.extend(self._calendar_gap_issues(prices, start_date, end_date))
             if check_adjustment and not prices.empty:
-                issues.extend(validate_adjust_type_consistency(prices, raise_on_error=False))
+                issues.extend(validate_adjust_type_consistency(prices, config=AdjustmentConfig(adjust_type=adjust_type), raise_on_error=False))
+            universe_result: StockUniverseResult | None = None
             if check_survivorship_bias:
-                result = StockUniverseBuilder(self.db_path).build_universe(end_date, **(universe_config or {}))
+                universe_result = StockUniverseBuilder(self.db_path).build_universe(end_date, **(universe_config or {}))
                 issues.extend(
-                    DataQualityIssue("WARNING", "survivorship_bias_warning", message=warning, details={"bias_flags": result.bias_flags})
-                    for warning in result.warnings
+                    DataQualityIssue("WARNING", "survivorship_bias_warning", message=warning, details={"bias_flags": universe_result.bias_flags})
+                    for warning in universe_result.warnings
                     if "bias" in warning.lower()
                 )
-            summary = self._summary(prices, issues, adjust_type, universe_config or {})
+            issues = self._deduplicate_issues(issues)
+            summary = self._summary(prices, issues, adjust_type, universe_result)
             self._replace_issues(run_id, issues)
             self._finish_run(run_id, "completed", summary, len(issues))
             return DataQualityRunResult(run_id, "completed", summary, issues)
@@ -143,6 +146,35 @@ class DataQualityAuditor:
                 issues.append(DataQualityIssue("WARNING", "missing_trading_day", code=code, date=missing, field="date", message="missing trading day in price data"))
         return issues
 
+    def _mark_legacy_adjust_type_assumption(self, prices: pd.DataFrame, adjust_type: str) -> pd.DataFrame:
+        result = prices.copy()
+        result["actual_adjust_type"] = "unknown"
+        result["assumed_adjust_type"] = adjust_type
+        return result
+
+    def _scope_issues(self, scope: str) -> list[DataQualityIssue]:
+        if scope in {"daily_prices", "single_stock"}:
+            return []
+        return [
+            DataQualityIssue(
+                "INFO",
+                "scope_partially_supported",
+                message="scope is partially supported in V4.0; daily price checks are primary",
+                details={"scope": scope},
+            )
+        ]
+
+    def _deduplicate_issues(self, issues: list[DataQualityIssue]) -> list[DataQualityIssue]:
+        unique: list[DataQualityIssue] = []
+        seen: set[tuple[Any, ...]] = set()
+        for issue in issues:
+            key = (issue.severity, issue.issue_type, issue.code, issue.name, issue.date, issue.field, issue.message, json_dumps(issue.details))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(issue)
+        return unique
+
     def _create_run(self, scope: str, start_date: str, end_date: str, adjust_type: str, universe_config: dict[str, Any]) -> str:
         run_id = str(uuid.uuid4())
         with connect(self.db_path) as conn:
@@ -197,9 +229,19 @@ class DataQualityAuditor:
                 ),
             )
 
-    def _summary(self, prices: pd.DataFrame, issues: list[DataQualityIssue], adjust_type: str, universe_config: dict[str, Any]) -> dict[str, Any]:
+    def _summary(
+        self,
+        prices: pd.DataFrame,
+        issues: list[DataQualityIssue],
+        requested_adjust_type: str,
+        universe_result: StockUniverseResult | None,
+    ) -> dict[str, Any]:
         counts = {severity: sum(issue.severity == severity for issue in issues) for severity in ["CRITICAL", "ERROR", "WARNING", "INFO"]}
         issue_types = pd.Series([issue.issue_type for issue in issues]).value_counts().to_dict() if issues else {}
+        actual_adjust_type = _actual_adjust_type(prices)
+        legacy_adjust_type_warning = any(issue.issue_type == "adjust_type_missing_legacy" for issue in issues)
+        survivorship_flags = sorted({flag for issue in issues if issue.issue_type == "survivorship_bias_warning" for flag in issue.details.get("bias_flags", [])})
+        universe_bias_flags = sorted(set((universe_result.bias_flags if universe_result else []) + survivorship_flags))
         return {
             "total_issues": len(issues),
             "critical_issues": counts["CRITICAL"],
@@ -212,9 +254,21 @@ class DataQualityAuditor:
             "duplicate_count": int(issue_types.get("duplicate_price_row", 0)),
             "invalid_ohlc_count": int(issue_types.get("invalid_ohlc", 0)),
             "stale_code_count": int(issue_types.get("stale_data", 0)),
-            "adjust_type": adjust_type,
-            "universe_bias_flags": universe_config.get("bias_flags", []),
+            "adjust_type": actual_adjust_type,
+            "requested_adjust_type": requested_adjust_type,
+            "actual_adjust_type": actual_adjust_type,
+            "assumed_adjust_type": requested_adjust_type if actual_adjust_type == "unknown" else None,
+            "legacy_adjust_type_warning": legacy_adjust_type_warning,
+            "universe_bias_flags": universe_bias_flags,
         }
+
+
+def _actual_adjust_type(prices: pd.DataFrame) -> str:
+    if prices.empty or "adjust_type" not in prices.columns:
+        return "unknown"
+    values = prices["adjust_type"].fillna("unknown").astype(str).str.strip().str.lower()
+    counts = values.value_counts()
+    return str(counts.index[0]) if not counts.empty else "unknown"
 
 
 def _git_commit() -> str:

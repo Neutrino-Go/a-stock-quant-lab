@@ -324,6 +324,8 @@ def data_quality_page() -> None:
             st.warning("当前数据存在严重问题，回测结果可能不可靠。")
         st.write("数据区间", summary.get("start_date") or "-", "至", summary.get("end_date") or "-")
         st.write("当前主要 adjust_type", summary.get("adjust_type") or "unknown")
+        if summary.get("adjust_type") == "unknown":
+            st.warning("当前行情缺少真实 adjust_type，回测复权口径为假设值，结果不可与其他复权口径直接比较。")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -435,6 +437,13 @@ def data_quality_page() -> None:
             min_amount = st.number_input("min_amount", min_value=0.0, value=0.0, step=10_000_000.0)
             min_price = st.number_input("min_price", min_value=0.0, value=0.0)
             max_price = st.number_input("max_price", min_value=0.0, value=0.0)
+        col4, col5, col6 = st.columns(3)
+        with col4:
+            market = st.text_input("market", value="", key="universe_market")
+        with col5:
+            industry = st.text_input("industry", value="", key="universe_industry")
+        with col6:
+            use_current_stock_list_fallback = st.checkbox("use_current_stock_list_fallback", value=True)
         if st.button("构建股票池"):
             result = builder.build_universe(
                 as_of_date=as_of_date.isoformat(),
@@ -446,6 +455,9 @@ def data_quality_page() -> None:
                 min_amount=float(min_amount) if min_amount else None,
                 min_price=float(min_price) if min_price else None,
                 max_price=float(max_price) if max_price else None,
+                market=market or None,
+                industry=industry or None,
+                use_current_stock_list_fallback=use_current_stock_list_fallback,
             )
             st.session_state["latest_universe_result"] = result.to_dict()
             st.metric("stock_count", result.stock_count)
@@ -455,17 +467,10 @@ def data_quality_page() -> None:
         if "latest_universe_result" in st.session_state:
             latest = st.session_state["latest_universe_result"]
             if st.button("保存 snapshot"):
-                saved_id = builder.save_snapshot(
-                    builder.build_universe(
-                        as_of_date=latest["as_of_date"],
-                        universe_name=latest["universe_name"],
-                        min_list_days=latest["config"].get("min_list_days", 250),
-                        exclude_st=latest["config"].get("exclude_st", True),
-                        exclude_suspended=latest["config"].get("exclude_suspended", True),
-                        exclude_delisted=latest["config"].get("exclude_delisted", True),
-                    )
-                )
+                saved_id = builder.save_snapshot_from_dict(latest)
                 st.success(f"已保存 snapshot：{saved_id}")
+                st.write("stock_count", latest.get("stock_count", 0))
+                st.write("warnings count", len(latest.get("warnings", [])))
 
     with tabs[4]:
         runs = auditor.list_runs()

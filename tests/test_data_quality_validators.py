@@ -109,3 +109,14 @@ def test_stale_data_detected():
     issues = DataValidator(stale_days=3).validate_daily_prices(df)
 
     assert any(issue.issue_type == "stale_data" for issue in issues)
+
+
+def test_missing_adjust_type_warns_instead_of_assuming_requested_type():
+    df = _valid_rows().drop(columns=["adjust_type"])
+
+    issues = DataValidator().validate_daily_prices(df, adjust_type="qfq")
+
+    legacy = [issue for issue in issues if issue.issue_type == "adjust_type_missing_legacy"]
+    assert legacy
+    assert legacy[0].details["requested_adjust_type"] == "qfq"
+    assert legacy[0].details["actual_adjust_type"] == "unknown"

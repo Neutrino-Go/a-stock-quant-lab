@@ -66,3 +66,18 @@ def test_snapshot_warns_when_no_quality_run(tmp_path):
     snapshot = service.build_data_snapshot_info(price_df=pd.DataFrame({"date": ["2024-01-01"], "code": ["000001"]}))
 
     assert "no data_quality_run available" in snapshot["universe_warnings"]
+
+
+def test_snapshot_does_not_default_legacy_daily_price_to_qfq(tmp_path):
+    service = DataHealthService(tmp_path / "health.db")
+
+    snapshot = service.build_data_snapshot_info(
+        adjust_type="qfq",
+        price_df=pd.DataFrame({"date": ["2024-01-01"], "code": ["000001"], "close": [10.0]}),
+    )
+
+    assert snapshot["adjust_type"] == "unknown"
+    assert snapshot["actual_adjust_type"] == "unknown"
+    assert snapshot["requested_adjust_type"] == "qfq"
+    assert snapshot["assumed_adjust_type"] == "qfq"
+    assert "legacy daily_price has no adjust_type; backtest adjust type is an assumption" in snapshot["universe_warnings"]

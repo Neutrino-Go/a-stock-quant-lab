@@ -62,3 +62,33 @@ def test_audit_records_survivorship_bias_warning(tmp_path):
     result = auditor.run_audit("daily_prices", "2024-01-01", "2024-01-03", price_df=prices, check_survivorship_bias=True)
 
     assert any(issue.issue_type == "survivorship_bias_warning" for issue in result.issues)
+
+
+def test_audit_warns_when_legacy_prices_have_no_adjust_type(tmp_path):
+    auditor = DataQualityAuditor(tmp_path / "audit.db")
+    prices = pd.DataFrame(
+        [
+            {"code": "000001", "name": "A", "date": "2024-01-02", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 1, "amount": 1, "turnover": 1}
+        ]
+    )
+
+    result = auditor.run_audit("daily_prices", "2024-01-01", "2024-01-03", price_df=prices, adjust_type="qfq", check_survivorship_bias=False)
+
+    assert any(issue.issue_type == "adjust_type_missing_legacy" for issue in result.issues)
+    assert result.summary["actual_adjust_type"] == "unknown"
+    assert result.summary["requested_adjust_type"] == "qfq"
+    assert result.summary["assumed_adjust_type"] == "qfq"
+    assert result.summary["legacy_adjust_type_warning"] is True
+
+
+def test_audit_records_scope_partially_supported_info(tmp_path):
+    auditor = DataQualityAuditor(tmp_path / "audit.db")
+    prices = pd.DataFrame(
+        [
+            {"code": "000001", "name": "A", "date": "2024-01-02", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 1, "amount": 1, "turnover": 1, "adjust_type": "qfq"}
+        ]
+    )
+
+    result = auditor.run_audit("stock_list", "2024-01-01", "2024-01-03", price_df=prices, check_survivorship_bias=False)
+
+    assert any(issue.issue_type == "scope_partially_supported" and issue.severity == "INFO" for issue in result.issues)

@@ -373,7 +373,7 @@ V4.0 新增“数据质量”页面和 `data_quality/` 模块，用于在策略�
 
 ### 复权模式
 
-行情数据需要记录 `adjust_type`，支持 `raw`、`qfq`、`hfq`。旧行情表没有该字段时会被视作 legacy/unknown，并在数据快照中提示。`raw`、`qfq`、`hfq` 结果不可直接混用比较；同一次回测默认不允许混合复权模式，除非显式允许。
+行情数据需要记录 `adjust_type`，支持 `raw`、`qfq`、`hfq`。旧行情表没有该字段时会被视作 legacy/unknown，系统不会确认其为 `qfq`、`raw` 或 `hfq`。数据质量页面中选择的 `adjust_type` 只作为审计假设和回测口径记录，不代表历史数据真实复权口径。`raw`、`qfq`、`hfq` 结果不可直接混用比较；同一次回测默认不允许混合复权模式，除非显式允许。
 
 ### 股票池快照
 
@@ -381,7 +381,7 @@ V4.0 新增“数据质量”页面和 `data_quality/` 模块，用于在策略�
 
 ### 数据快照
 
-实验、研究工作流和候选复检会尽量保存 `data_snapshot_info`，包括股票数量、行情记录数、数据区间、adjust_type、最近数据质量审计、critical/warning 数量、universe_config 和 universe_warnings。没有审计记录时不会阻止回测，但会记录 warning。
+实验、研究工作流和候选复检会尽量保存 `data_snapshot_info`，包括股票数量、行情记录数、数据区间、requested/actual/assumed adjust_type、最近数据质量审计、critical/warning 数量、universe_config 和 universe_warnings。没有审计记录时不会阻止回测；如果旧 `daily_price` 缺少 `adjust_type`，会记录 `actual_adjust_type="unknown"` 和 legacy warning。
 
 ### 数据质量报告
 

@@ -67,6 +67,20 @@ class StockUniverseResult:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "StockUniverseResult":
+        payload = dict(value or {})
+        return cls(
+            as_of_date=str(payload.get("as_of_date") or ""),
+            universe_name=str(payload.get("universe_name") or "default"),
+            codes=[normalize_code(code) for code in payload.get("codes", [])],
+            stock_count=int(payload.get("stock_count") or len(payload.get("codes", []) or [])),
+            config=dict(payload.get("config") or {}),
+            warnings=list(payload.get("warnings") or []),
+            bias_flags=list(payload.get("bias_flags") or []),
+            metadata=dict(payload.get("metadata") or {}),
+        )
+
 
 @dataclass(frozen=True)
 class AdjustmentConfig:
@@ -127,6 +141,8 @@ CREATE TABLE IF NOT EXISTS stock_universe_snapshots (
     stock_count INTEGER NOT NULL,
     codes_json TEXT NOT NULL,
     warnings_json TEXT NOT NULL,
+    bias_flags_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
 
@@ -181,6 +197,8 @@ def ensure_data_quality_schema(db_path: str | Path = DATABASE_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.executescript(DATA_QUALITY_SCHEMA_SQL)
+        _ensure_column(conn, "stock_universe_snapshots", "bias_flags_json", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(conn, "stock_universe_snapshots", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
 
 
 def connect(db_path: str | Path = DATABASE_PATH) -> sqlite3.Connection:
@@ -188,6 +206,12 @@ def connect(db_path: str | Path = DATABASE_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def json_dumps(value: Any) -> str:
