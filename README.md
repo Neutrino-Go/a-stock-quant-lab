@@ -354,3 +354,45 @@ V3.4 新增表：
 - 候选策略不是买入清单。
 - 本工具不构成投资建议。
 - 本工具不支持自动交易。
+
+## V4.0 数据质量、股票池与偏差控制
+
+V4.0 新增“数据质量”页面和 `data_quality/` 模块，用于在策略研究前检查本地数据是否可信。系统会识别重复行情、缺失交易日、非法 OHLC、负数价格或成交量、异常涨跌幅、复权模式混用、数据滞后和股票池偏差风险。数据质量检查通过只代表当前本地数据未发现指定规则下的问题，不代表策略未来有效。
+
+### 数据质量检查
+
+数据审计会写入 `data_quality_runs` 和 `data_quality_issues`，并保留审计范围、日期区间、复权类型、股票池配置、问题数量和 Git commit。审计支持小范围股票代码、单只股票、当前已缓存行情和股票池配置检查。全市场多年审计可能耗时较久，建议先用默认 50 只股票做抽样检查。
+
+### 交易日历
+
+系统优先使用 `trading_calendar` 表。如果本地没有完整交易日历，会从已有行情日期推断 fallback，并标记 `source="inferred_from_prices"`。该 fallback 仅用于研究辅助，不能替代交易所官方日历。
+
+### 幸存者偏差
+
+历史回测不能默认直接使用当前股票列表。若系统只能使用当前 `stock_list` fallback，会显示 warning：`current_stock_list_fallback may introduce survivorship bias`。这表示退市、长期停牌或历史 ST 状态缺失可能让历史股票池偏乐观。
+
+### 复权模式
+
+行情数据需要记录 `adjust_type`，支持 `raw`、`qfq`、`hfq`。旧行情表没有该字段时会被视作 legacy/unknown，系统不会确认其为 `qfq`、`raw` 或 `hfq`。数据质量页面中选择的 `adjust_type` 只作为审计假设和回测口径记录，不代表历史数据真实复权口径。`raw`、`qfq`、`hfq` 结果不可直接混用比较；同一次回测默认不允许混合复权模式，除非显式允许。
+
+### 股票池快照
+
+股票池构建器会按 `as_of_date`、上市天数、ST/停牌/退市状态、成交额和价格过滤股票。价格和成交额过滤只使用 `as_of_date` 当日或之前的数据，避免未来函数。股票池结果可保存到 `stock_universe_snapshots`，用于追溯实验当时使用的 universe 配置与 warning。
+
+### 数据快照
+
+实验、研究工作流和候选复检会尽量保存 `data_snapshot_info`，包括股票数量、行情记录数、数据区间、requested/actual/assumed adjust_type、最近数据质量审计、critical/warning 数量、universe_config 和 universe_warnings。没有审计记录时不会阻止回测；如果旧 `daily_price` 缺少 `adjust_type`，会记录 `actual_adjust_type="unknown"` 和 legacy warning。
+
+### 数据质量报告
+
+数据质量报告默认导出到 `reports/data_quality/`，支持 Markdown 报告和 issues CSV。报告包含审计摘要、覆盖情况、主要问题类型、严重问题明细、股票池偏差提示、复权模式提示和风险说明。生成文件不会提交到 Git。
+
+### 风险提示
+
+- 当前历史 ST、停牌、退市状态可能受数据源能力限制。
+- 使用当前股票列表 fallback 会引入幸存者偏差。
+- 交易日历 fallback 来自本地行情推断，仅供研究辅助。
+- `raw`、`qfq`、`hfq` 数据不可混用比较。
+- 数据质量通过不代表策略未来有效。
+- 本工具不构成投资建议。
+- 本工具不支持自动交易。

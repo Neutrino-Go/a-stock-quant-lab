@@ -11,6 +11,7 @@ from candidate.candidate_decision import evaluate_candidate_lifecycle
 from candidate.candidate_models import CandidateComparison, CandidateRevalidationConfig, CandidateRevalidationResult
 from candidate.candidate_store import CandidateStore
 from data.database import get_database_status
+from data_quality.data_health_service import DataHealthService
 from execution.cost_model import TradingCostConfig
 from research.experiment_service import ExperimentService
 from stability.stability_service import StrategyStabilityService
@@ -115,6 +116,7 @@ class CandidateRevalidator:
                 config=config.to_dict(),
                 tags=config.tags,
                 notes=config.notes,
+                data_snapshot_info=_data_snapshot_info(),
             )
             self.candidate_store.update_revalidation_run(run_id, generated_experiment_id=generated_experiment_id)
         self.candidate_store.save_metric_snapshot(
@@ -232,6 +234,7 @@ class CandidateRevalidator:
         window: "ReviewWindow | None" = None,
     ) -> str:
         config_payload = config.to_dict()
+        config_payload["data_snapshot_info"] = _data_snapshot_info()
         if window is not None:
             config_payload["resolved_review_window"] = window.to_dict()
         return self.candidate_store.create_revalidation_run(
@@ -348,6 +351,13 @@ def latest_local_data_date() -> str | None:
         return status.get("max_date")
     except Exception:
         return pd.Timestamp.today().date().isoformat()
+
+
+def _data_snapshot_info() -> dict[str, Any]:
+    try:
+        return DataHealthService().build_data_snapshot_info()
+    except Exception as exc:
+        return {"universe_warnings": [f"data quality snapshot unavailable: {exc}"]}
 
 
 def current_git_commit(project_root: str | Path | None = None) -> str:

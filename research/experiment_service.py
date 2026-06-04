@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from data.database import get_database_status
+from data_quality.data_health_service import DataHealthService
 from research.experiment_store import ExperimentStore
 
 
@@ -298,9 +299,14 @@ def current_git_commit(project_root: str | Path | None = None) -> str:
 
 def current_data_snapshot() -> dict[str, Any]:
     try:
-        return get_database_status()
+        return DataHealthService().build_data_snapshot_info()
     except Exception:
-        return {}
+        try:
+            legacy = get_database_status()
+        except Exception:
+            return {"universe_warnings": ["data snapshot unavailable"]}
+        legacy["universe_warnings"] = ["data quality snapshot unavailable; using legacy database status"]
+        return legacy
 
 
 def _frame(value: object) -> pd.DataFrame:
