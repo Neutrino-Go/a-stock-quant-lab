@@ -3,8 +3,14 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+import requests
 
 from config import DAILY_COLUMNS, DEFAULT_ADJUST, DEFAULT_START_DATE
+from utils.network import no_proxy_requests_context
+
+
+class DataFetchError(RuntimeError):
+    """User-facing data fetch failure with the original exception attached."""
 
 
 def _akshare():
@@ -53,13 +59,20 @@ def fetch_stock_daily(
     ak = _akshare()
     end_date = end_date or date.today().strftime("%Y%m%d")
     normalized_code = _normalize_code(code)
-    raw = ak.stock_zh_a_hist(
-        symbol=normalized_code,
-        period="daily",
-        start_date=start_date,
-        end_date=end_date,
-        adjust=adjust,
-    )
+    try:
+        with no_proxy_requests_context():
+            raw = ak.stock_zh_a_hist(
+                symbol=normalized_code,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust=adjust,
+            )
+    except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+        raise DataFetchError(
+            "东方财富接口访问失败，可能是系统代理/VPN导致。请关闭代理或使用 "
+            "scripts/windows/start_streamlit_no_proxy.bat 启动。"
+        ) from exc
     return normalize_akshare_daily(raw, normalized_code, name or "")
 
 

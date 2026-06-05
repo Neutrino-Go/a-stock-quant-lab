@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from backtest.backtest_engine import apply_realistic_costs_to_trades, backtest_signals, run_strategy_backtest
@@ -23,6 +24,7 @@ from candidate.candidate_ui_helpers import (
     revalidation_summary_metrics,
     run_batch_revalidation,
 )
+from data.data_fetcher import DataFetchError
 from data.data_updater import DataUpdateService
 from data.database import get_database_status, get_stock_daily, get_stock_list
 from data_quality.audit import DataQualityAuditor
@@ -517,10 +519,22 @@ def data_center() -> None:
         with col3:
             force = st.checkbox("强制覆盖日期区间", value=False)
         if st.button("更新单只股票"):
-            with st.spinner("正在更新日线"):
-                rows = service.update_stock_daily(code=code, start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"), force=force)
-            clear_data_cache()
-            st.success(f"写入/更新 {rows} 行")
+            try:
+                with st.spinner("正在更新日线"):
+                    rows = service.update_stock_daily(code=code, start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"), force=force)
+            except (DataFetchError, requests.exceptions.ProxyError) as exc:
+                st.error("东方财富接口访问失败，可能是代理/VPN导致。")
+                st.info(
+                    "解决建议：关闭 VPN / Clash / v2rayN / 代理软件；或使用 "
+                    "scripts/windows/start_streamlit_no_proxy.bat 启动。"
+                    "如果本地已有数据，可以先继续测试个股分析、回测、实验中心。"
+                )
+                with st.expander("技术详情"):
+                    detail = exc.__cause__ if isinstance(exc, DataFetchError) and exc.__cause__ else exc
+                    st.code(str(detail))
+            else:
+                clear_data_cache()
+                st.success(f"写入/更新 {rows} 行")
 
     with st.expander("批量更新股票数据"):
         codes_text = st.text_area("股票代码列表", placeholder="000001, 000002, 600000")

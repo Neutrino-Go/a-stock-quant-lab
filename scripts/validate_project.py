@@ -51,6 +51,7 @@ REQUIRED_DIRS = [
     "strategy",
     "candidate",
     "tests",
+    "utils",
     "workflow",
     "storage",
 ]
@@ -154,6 +155,8 @@ REQUIRED_FILES = [
     "tests/test_data_quality_audit.py",
     "tests/test_data_health_service.py",
     "tests/test_data_quality_report.py",
+    "tests/test_network_proxy.py",
+    "utils/network.py",
     "pytest.ini",
 ]
 
