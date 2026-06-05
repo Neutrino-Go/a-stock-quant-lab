@@ -73,6 +73,20 @@ copy storage\stock_quant.db storage\stock_quant_backup_manual_qa.db
 1. 双击 `scripts/windows/check_eastmoney_network.bat`。
 2. 查看窗口中的 `HTTP_STATUS` 或中文错误提示。
 
+检查 A 股日线数据源 fallback：
+
+1. 双击 `scripts/windows/check_a_stock_data_sources.bat`。
+2. 查看 `AKShare provider: eastmoney`、`AKShare provider: auto`、`AKShare provider: sina` 的结果。
+3. 如果 EastMoney 在 VPN/Clash 环境下失败，但 `auto` 成功，说明系统已经自动切换到备用数据源。
+
+如果 EastMoney 在 VPN 环境下失败：
+
+1. 打开“数据中心”。
+2. 在“更新单只股票数据”区域，把“数据源”选择为 `auto`。
+3. 点击“更新单只股票”。
+4. 成功时页面会显示实际使用的数据源，例如 `eastmoney` 或 `sina`。
+5. 如果仍失败，再检查 Clash 日志，或临时关闭 VPN/代理软件后重试。
+
 如果仍然出现 ProxyError：
 
 1. 关闭 Clash / v2rayN / VPN / 加速器。
