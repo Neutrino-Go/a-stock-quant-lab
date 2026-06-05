@@ -51,6 +51,7 @@ REQUIRED_DIRS = [
     "strategy",
     "candidate",
     "tests",
+    "utils",
     "workflow",
     "storage",
 ]
@@ -154,6 +155,13 @@ REQUIRED_FILES = [
     "tests/test_data_quality_audit.py",
     "tests/test_data_health_service.py",
     "tests/test_data_quality_report.py",
+    "tests/test_network_proxy.py",
+    "tests/test_data_fetcher_fallback.py",
+    "utils/network.py",
+    "scripts/check_a_stock_data_sources.py",
+    "scripts/windows/start_streamlit_no_proxy.bat",
+    "scripts/windows/check_eastmoney_network.bat",
+    "scripts/windows/check_a_stock_data_sources.bat",
     "pytest.ini",
 ]
 

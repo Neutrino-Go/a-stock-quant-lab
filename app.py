@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from backtest.backtest_engine import apply_realistic_costs_to_trades, backtest_signals, run_strategy_backtest
@@ -23,6 +24,7 @@ from candidate.candidate_ui_helpers import (
     revalidation_summary_metrics,
     run_batch_revalidation,
 )
+from data.data_fetcher import DataFetchError, is_daily_provider_available
 from data.data_updater import DataUpdateService
 from data.database import get_database_status, get_stock_daily, get_stock_list
 from data_quality.audit import DataQualityAuditor
@@ -160,6 +162,13 @@ def stock_universe_builder() -> StockUniverseBuilder:
 def clear_data_cache() -> None:
     load_daily_data.clear()
     load_factor_data.clear()
+
+
+def data_fetch_error_technical_detail(exc: BaseException) -> str:
+    if isinstance(exc, DataFetchError) and exc.provider_errors:
+        return "\n".join(exc.provider_errors)
+    detail = exc.__cause__ if isinstance(exc, DataFetchError) and exc.__cause__ else exc
+    return str(detail)
 
 
 def pct(value: object) -> str:
@@ -516,11 +525,41 @@ def data_center() -> None:
             end = st.date_input("结束日期", value=date.today(), key="single_end")
         with col3:
             force = st.checkbox("强制覆盖日期区间", value=False)
+        provider = st.selectbox(
+            "数据源",
+            options=["auto", "eastmoney", "sina"],
+            index=0,
+            help="auto 会先尝试东方财富，失败后自动尝试新浪 fallback。",
+        )
+        if provider == "sina" and not is_daily_provider_available("sina"):
+            st.warning("当前 AKShare 环境没有可用的新浪 fallback 接口。")
         if st.button("更新单只股票"):
-            with st.spinner("正在更新日线"):
-                rows = service.update_stock_daily(code=code, start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"), force=force)
-            clear_data_cache()
-            st.success(f"写入/更新 {rows} 行")
+            try:
+                with st.spinner("正在更新日线"):
+                    update_result = service.update_stock_daily(
+                        code=code,
+                        start_date=start.strftime("%Y%m%d"),
+                        end_date=end.strftime("%Y%m%d"),
+                        force=force,
+                        preferred_provider=provider,
+                    )
+            except (DataFetchError, requests.exceptions.ProxyError) as exc:
+                st.error("A股日线数据获取失败。东方财富失败时系统会尝试 fallback，但本次没有成功。")
+                st.info(
+                    "建议：数据源选择 auto；关闭 VPN / Clash / v2rayN / 代理软件后重试；"
+                    "或使用 scripts/windows/start_streamlit_no_proxy.bat 启动。"
+                    "如果本地已有数据，可以先继续测试个股分析、回测、实验中心。"
+                )
+                if isinstance(exc, DataFetchError) and exc.provider_errors:
+                    st.warning("数据源尝试结果：" + " | ".join(exc.provider_errors))
+                with st.expander("技术详情"):
+                    st.code(data_fetch_error_technical_detail(exc))
+            else:
+                clear_data_cache()
+                st.success(f"写入/更新 {update_result.rows} 行")
+                st.caption(f"数据源：{update_result.provider or provider}")
+                for warning in update_result.warnings:
+                    st.warning(warning)
 
     with st.expander("批量更新股票数据"):
         codes_text = st.text_area("股票代码列表", placeholder="000001, 000002, 600000")
@@ -533,7 +572,13 @@ def data_center() -> None:
         if st.button("批量更新"):
             codes = [item.strip() for item in codes_text.replace("\n", ",").split(",") if item.strip()]
             with st.spinner("正在批量更新"):
-                result = service.update_batch(codes=codes or None, limit=int(limit), start_date=batch_start.strftime("%Y%m%d"), end_date=batch_end.strftime("%Y%m%d"))
+                result = service.update_batch(
+                    codes=codes or None,
+                    limit=int(limit),
+                    start_date=batch_start.strftime("%Y%m%d"),
+                    end_date=batch_end.strftime("%Y%m%d"),
+                    preferred_provider="auto",
+                )
             clear_data_cache()
             st.dataframe(result, use_container_width=True)
 
